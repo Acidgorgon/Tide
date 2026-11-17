@@ -24,6 +24,7 @@ local StateLog = require(script.Parent.StateLog)
 local StateSchema = require(Shared.StateSchema)
 local AnimRegistry = require(Shared.AnimRegistry)
 local Options = require(Shared.Options)
+local LH = require(Shared.Lighthouse)
 
 local Server = {}
 
@@ -160,14 +161,22 @@ local function flushBroadcast()
 		return
 	end
 	local b, insts = Control.takeAll(bcast)
+	local lh = LH.api
 	for _, rx in State.rxList do
 		remoteR:FireClient(rx.player, b, insts)
+		if lh then
+			lh.net("Tide", "Control", "out", buffer.len(b), rx.player)
+		end
 	end
 end
 
 local function sendTo(player: any, w: Control.Writer)
 	local b, insts = Control.takeAll(w)
 	remoteR:FireClient(player, b, insts)
+	local lh = LH.api
+	if lh then
+		lh.net("Tide", "Control", "out", buffer.len(b), player)
+	end
 end
 
 -- Called when a kind changes after start: resend the kinds table.
@@ -922,25 +931,46 @@ local function onFrame(dt: number)
 		step = dt
 	end
 	lastT = t
+	local lh = LH.frame()
+	if lh then
+		LH.sample:begin()
+	end
 	Ticker.step(t, step)
 	Anim.step(t, step)
 	retryTeleports(t)
 	Lock.step()
+	if lh then
+		LH.sample:finish()
+		LH.relay:begin()
+	end
 	flushBroadcast()
 	Relay.step(t, step)
-	Server.flushReliable(t)
+	Anim.flush(t)
+	if lh then
+		LH.relay:finish()
+	end
 	countRates(t)
 end
 
 local function onUpload(player: any, payload: any)
+	local lh = LH.api
 	if typeof(payload) == "buffer" then
 		State.counters.inBytes += buffer.len(payload)
+		if lh then
+			lh.net("Tide", "Upload", "in", buffer.len(payload), player)
+		end
 	end
 	local rx = State.rx[player]
 	if rx == nil then
 		return
 	end
+	if lh then
+		LH.receive:begin()
+	end
 	local ok = pcall(Receive.handle, player, rx, payload, now(), frame)
+	if lh then
+		LH.receive:finish()
+	end
 	if not ok then
 		State.counters.errors += 1
 	end
@@ -949,6 +979,10 @@ end
 local function onControl(player: any, payload: any)
 	if typeof(payload) == "buffer" then
 		State.counters.inBytes += buffer.len(payload)
+		local lh = LH.api
+		if lh then
+			lh.net("Tide", "Control", "in", buffer.len(payload), player)
+		end
 	end
 	local ok = pcall(handleControl, player, payload)
 	if not ok then

@@ -17,6 +17,7 @@
 local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)
 local Control = require(Shared.Control)
+local LH = require(Shared.Lighthouse)
 local AnimCodec = require(Shared.AnimCodec)
 local AnimRegistry = require(Shared.AnimRegistry)
 local AnimSet = require(Shared.AnimSet)
@@ -427,7 +428,12 @@ function Anim.handleRegister(player: any, rx: any, b: buffer, pos: number): numb
 			end
 		end
 		if w.pos > 0 then
-			remote:FireClient(player, Control.take(w), {})
+			local b = Control.take(w)
+			remote:FireClient(player, b, {})
+			local lh = LH.api
+			if lh then
+				lh.net("Tide", "Anim", "out", buffer.len(b), player)
+			end
 		end
 		return pos
 	end
@@ -450,7 +456,12 @@ function Anim.handleRegister(player: any, rx: any, b: buffer, pos: number): numb
 		rx.regTokens = tokens - 1
 		local w = Control.writer(8 + len)
 		writeAnimId(w, id, s)
-		remote:FireClient(player, Control.take(w), {})
+		local b = Control.take(w)
+		remote:FireClient(player, b, {})
+		local lh = LH.api
+		if lh then
+			lh.net("Tide", "Anim", "out", buffer.len(b), player)
+		end
 		return pos
 	end
 	if not AnimRegistry.valid(s) then
@@ -597,6 +608,10 @@ function Anim.flush(t: number)
 			local b, insts = Control.takeAll(w)
 			remote:FireClient(rx.player, b, insts)
 			counters.animRelayBytes += buffer.len(b)
+			local lh = LH.api
+			if lh then
+				lh.net("Tide", "Anim", "out", buffer.len(b), me)
+			end
 		end
 	end
 	Anim.flushDone()

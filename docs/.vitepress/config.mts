@@ -36,6 +36,7 @@ export default defineConfig({
           { text: 'Timeline state', link: '/guide/state' },
           { text: 'Interest and bandwidth', link: '/guide/interest' },
           { text: 'Security', link: '/guide/security' },
+          { text: 'Profiling with Lighthouse', link: '/guide/profiling' },
           { text: 'Migrating from Chrono', link: '/guide/migrating-from-chrono' },
         ],
       },

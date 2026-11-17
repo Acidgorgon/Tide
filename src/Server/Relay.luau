@@ -19,6 +19,7 @@ local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)
 local Codec = require(Shared.Codec)
 local State = require(script.Parent.State)
+local LH = require(Shared.Lighthouse)
 
 local Relay = {}
 
@@ -61,6 +62,7 @@ local remote: any = nil
 local curPlayer: any = nil
 local sentBytes = 0
 local sentPackets = 0
+local lh: any = nil -- Lighthouse for this step (nil when absent)
 
 local interestAcc = 0
 
@@ -193,6 +195,9 @@ local function flush()
 	end
 	bcopy(b, 0, out, 0, n)
 	remote:FireClient(curPlayer, b)
+	if lh then
+		lh.net("Tide", "Relay", "out", n, curPlayer)
+	end
 	sentBytes += n
 	sentPackets += 1
 	outPos = HEADER
@@ -287,6 +292,7 @@ function Relay.step(now: number, dt: number)
 		return
 	end
 	frameTime = ceil(frameTime / TICK) * TICK
+	lh = LH.api
 	local wide = State.maxSlot > 255
 
 	-- 2. encode every new sample once

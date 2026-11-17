@@ -1,5 +1,5 @@
 /*
- * Water theme shared by the Current, Ripple, Anchor and Tide documentation sites.
+ * Water theme shared by the Current, Ripple, Anchor, Tide and Lighthouse documentation sites.
  * Keep this file identical in every repository.
  *
  * Each site picks its accent with ONE variable, --lib-accent, set in config.mts
@@ -16,6 +16,7 @@
   --accent-ripple: #08767c; /* aqua / teal */
   --accent-anchor: #1c3a80; /* deep navy */
   --accent-tide: #5b3fa8; /* moonlit violet */
+  --accent-lighthouse: #9c5a00; /* beacon amber */
 
   /* Shared water tones */
   --water-aqua: #0b7285;
@@ -53,6 +54,7 @@
   --accent-ripple: #4fd3cc;
   --accent-anchor: #9db7f2;
   --accent-tide: #b7a6f5;
+  --accent-lighthouse: #f5b13d;
 
   --water-aqua: #5fd0dd;
   --water-foam: #112338;
