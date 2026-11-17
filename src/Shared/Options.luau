@@ -13,6 +13,11 @@ local FALSE_OR_TABLE = {
 	lockHumanoidStates = true,
 }
 
+-- Fields whose default is nil but which take an Instance.
+local INSTANCE = {
+	animationFolder = true,
+}
+
 local CHOICES = {
 	lockMode = { root = true, anchored = true },
 	teleportOnWriteVelocity = { zero = true, keep = true },
@@ -45,6 +50,11 @@ function Options.apply(opts: { [string]: any }?, extras: { [string]: string }): 
 				Kinds.define(name, kindOpts)
 			end
 			out.kinds = value
+		elseif INSTANCE[key] then
+			if typeof(value) ~= "Instance" then
+				error(`Tide.start: option {key} must be an Instance`, 4)
+			end
+			(Config :: any)[key] = value
 		else
 			local default = (Config :: any)[key]
 			if default == nil then

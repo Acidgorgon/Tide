@@ -80,6 +80,17 @@ State.counters = {
 	inBytes = 0, -- payload bytes received from clients (both remotes, accepted or not)
 	inBytesPerSecond = 0, -- over the last full second
 	relayBytesPerSecond = 0,
+	-- animation channel (Config.animations)
+	animEvents = 0, -- events accepted (owner uploads and server-watched bots)
+	animBad = 0, -- malformed animation messages
+	animRate = 0, -- events over Config.AnimEventsPerSecond
+	animOwner = 0, -- events for entities the sender does not own
+	animStamp = 0, -- events stamped before the entity's previous event
+	animUnknown = 0, -- events with an unknown id or priority
+	animDropped = 0, -- events for kinds with animations = false
+	animRegister = 0, -- REGISTER requests refused (invalid string, per-player cap)
+	animIdsFull = 0, -- ids refused at Config.MaxAnimIds
+	animRelayBytes = 0, -- animation bytes sent to clients
 }
 
 State.onSuspicious = nil :: ((player: any, reason: string) -> ())?

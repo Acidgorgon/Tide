@@ -28,10 +28,13 @@ const THEME_COLOR: Record<Library, string> = {
   tide: '#5b3fa8',
 }
 
-/** The "Family" dropdown for the top navigation bar. */
+/** Name of the library family (Acid, 2026-11-17). */
+export const FAMILY_NAME = 'Harbor'
+
+/** The family dropdown for the top navigation bar. */
 export function familyNav(self: Library): DefaultTheme.NavItemWithChildren {
   return {
-    text: 'Family',
+    text: FAMILY_NAME,
     items: ORDER.map((id) => ({
       text: `${FAMILY[id].name} · ${FAMILY[id].role}`,
       link: FAMILY[id].site,
@@ -51,7 +54,7 @@ export function familyFooter(self: Library, options: FamilyOptions = {}): Defaul
     id === self ? `<strong>${FAMILY[id].name}</strong>` : `<a href="${FAMILY[id].site}">${FAMILY[id].name}</a>`,
   ).join(' · ')
   return {
-    message: `Part of the ${links} family of Roblox libraries. Released under the ${options.license ?? 'MIT'} license.`,
+    message: `Part of ${FAMILY_NAME}, a family of Roblox libraries: ${links}. Released under the ${options.license ?? 'MIT'} license.`,
   }
 }
 

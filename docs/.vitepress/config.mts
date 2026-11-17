@@ -32,6 +32,7 @@ export default defineConfig({
           { text: 'Players', link: '/guide/players' },
           { text: 'Bots and NPCs', link: '/guide/entities' },
           { text: 'Time and rewind', link: '/guide/time-and-rewind' },
+          { text: 'Animations', link: '/guide/animations' },
           { text: 'Interest and bandwidth', link: '/guide/interest' },
           { text: 'Security', link: '/guide/security' },
           { text: 'Migrating from Chrono', link: '/guide/migrating-from-chrono' },

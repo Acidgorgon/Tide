@@ -46,6 +46,15 @@ local Config = {
 	ModelRetry = 1.0, -- seconds between asks for models that did not arrive (streaming)
 	TeleportAckTime = 0.3, -- seconds after a server teleport during which the owner flags its uploads
 	startTimeout = 30, -- client Tide.start(): seconds to wait for the server's remotes before warning and returning false
+
+	-- Animations (v0.2; see Shared/AnimWatch, Server/Anim, Client/AnimPlay)
+	animations = false, -- replay Animator play/stop/adjust events at each receiver's render time (server setting, sent)
+	animationsOwnerLocal = true, -- the owner client swaps in a client-created Animator so Roblox stops replicating its tracks (sent)
+	animationFolder = nil :: Instance?, -- Animation instances pre-registered on both sides (no bytes), e.g. ReplicatedStorage.Assets.Animations
+	animationFade = 0.1, -- seconds: fade used when the watcher cannot estimate one
+	MaxAnimIds = 1024, -- registered animation ids in total (folder + runtime)
+	AnimEventsPerSecond = 60, -- animation events per player per second (token bucket, burst 30)
+	AnimApplyPerFrame = 64, -- client: animation events applied per frame at most
 }
 
 return Config

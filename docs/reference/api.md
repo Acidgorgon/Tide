@@ -59,6 +59,7 @@ Up to 255 kinds; names under 64 characters. Errors on an unknown option or a val
 | `keepAlive` | number | 0.5 | server | seconds between samples of an idle entity (server-owned samples and client uploads) |
 | `apply` | `"cframe"` \| `"none"` \| `(model, CFrame) -> ()` | `"cframe"` | client | how a client applies the drawn pose |
 | `afterApply` | `false` \| `(model, CFrame) -> ()` | `false` | client | called each frame after the pose is applied (the default apply, anchoring included, still runs); errors count as `applyErrors` |
+| `animations` | boolean | `true` | server | `false`: this kind's animations stay Roblox's when `Config.animations` is on |
 
 "Server" options are sent to clients by the server (`rate`, `rotation`, `buffer`, `extrapolate`, `keepAlive`, `maxSpeed`, `maxRise`, `maxFall`) or only
 used there; set them on the server. `apply` is read on the client; set it on the client. Built-in
@@ -119,6 +120,55 @@ and the newest after it ends. `nil` if Tide doesn't know the target.
 local cf = Tide.at(victim.Character, seenAt)
 ```
 
+### Tide.play
+
+```lua
+Tide.play(model: Instance, animation: Animation | string, fade: number?, weight: number?, speed: number?) -> AnimationTrack?
+```
+
+[Animations](/guide/animations) only. Plays on the entity's `Animator` from the side that owns it (the
+server for server-owned entities, the owning client for its own) and sends the exact `fade` (default
+0.1) instead of a measured one. `animation` is an `Animation` or the name of one under
+`Config.animationFolder` (an unknown name is an error). Tracks are loaded once per `Animator`. Returns
+the track, or `nil` when this side doesn't own the entity or it has no `Animator`.
+
+### Tide.stop
+
+```lua
+Tide.stop(model: Instance, animation: Animation | string, fade: number?)
+```
+
+Stops every playing track of that animation on the entity's `Animator` (owner side), sending the exact
+`fade` (default 0.1).
+
+### Tide.playing
+
+```lua
+Tide.playing(model: Instance, t: number?) -> { [string]: Info }?
+```
+
+What Tide knows the entity plays, keyed by the animation's name in `Config.animationFolder` (else its
+`AnimationId`). `nil` when animations are off or the entity isn't animated by Tide.
+
+- **Server:** from the events it accepted, at server time `t` (default now; up to a second back
+  includes animations stopped since). `Info`: `id`, `name`, `since` (server time of the play),
+  `timePosition` (at `t`, not wrapped to the length: the server doesn't load animations), `speed`,
+  `weight`, `fade`, `priority`, `looped`, `stopping` / `stopT` (a stop arrived; faded out at `stopT`).
+- **Client:** your own entities: what their `Animator` plays (`track` included). Other entities: what
+  Tide plays for them at the time their body is drawn (`track` is the local track).
+
+### Tide.animated
+
+```lua
+Tide.animated(fn: (model: Instance, op: string, name: string, info: { [string]: any }) -> ()) -> Connection
+```
+
+Calls `fn` for each animation event. `op` is `"play"`, `"stop"`, `"speed"`, `"weight"`, `"seek"` or
+`"priority"`; `info` has `id`, `name`, `time` (the event's server time), `fade`, `weight`, `speed`,
+`timePosition`, `priority`, `looped` (and `track` on a client). On a client it fires when the event is
+applied to another entity, in step with its body; on the server when the event is accepted. Each call
+runs in its own thread.
+
 ### Tide.stats
 
 ```lua
@@ -130,7 +180,9 @@ A copy of the counters.
 | Side | Counters |
 |---|---|
 | server | `packets`, `samples`, `badPacket`, `owner`, `stamp`, `nan`, `speed`, `rate`, `errors`, `relayBytes`, `relayPackets`, `budgetDropped`, `spacing` (uploads closer than half an interval), `teleportWait` (owner uploads dropped while a teleport is unacknowledged), `teleportIgnored`, `inBytes` (all bytes received from clients), `inBytesPerSecond`, `relayBytesPerSecond` (both over the last second) |
+| server, animations | `animEvents` (accepted), `animBad` (malformed), `animRate`, `animOwner`, `animStamp` (older than the entity's previous event), `animUnknown` (unknown id or priority), `animDropped` (kind opted out), `animRegister` (refused id requests), `animIdsFull`, `animRelayBytes` |
 | client | `packets`, `records`, `badPacket`, `unknownSlot`, `late`, `uploads`, `uploadBytes`, `uploadSkipped` (idle samples not uploaded), `applyErrors` |
+| client, animations | `animSent`, `animApplied`, `animSnaps`, `animIgnored`, `animOverflow` (applied early: queue full), `animDrift` (tracks put back on the render clock), `animUnknown`, `animBad`, `animSwapped`, `animSwapSkipped` (owner `Animator` already in use) |
 
 See [Security](/guide/security#reporting) for what the server counters mean.
 
@@ -191,6 +243,11 @@ Tide.onSuspicious(fn: (player: Player, reason: string) -> ())
 
 Sets the one hook called when an upload fails a check. `reason` is `"badPacket"`, `"nan"`, `"speed"`,
 or `"teleportIgnored"` (the owner did not confirm a server teleport after `Config.TeleportTries` sends).
+With [animations](/guide/animations) on, also `"animRate"` (over `Config.AnimEventsPerSecond`),
+`"animOwner"` (events for an entity the player doesn't own; events from the previous owner within
+2 s of an owner change or removal are dropped without a report) and `"animRegister"` (an invalid
+animation id, over 64 id requests a minute, over the player's share of new ids, or `Config.MaxAnimIds`
+reached).
 Rate limited to 4 calls per second per player; runs in its own thread.
 
 ### Tide.velocity (server)

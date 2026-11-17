@@ -73,3 +73,15 @@ See [Players: the lock](/guide/players#the-lock).
 | `startTimeout` | `30` | Seconds `Tide.start()` waits for the server's remotes before warning and returning `false`. |
 
 `NeedGapMax` and `SnapGap` are also read by the server's `Tide.at` interpolation.
+
+## Animations
+
+| Field | Default | Side | Meaning |
+|---|---|---|---|
+| `animations` | `false` | server, sent | Replay `Animator` events at each receiver's render time ([guide](/guide/animations)). Off: Roblox replicates animations as before and no animation bytes are sent. Set it on a client too to swap the owner's `Animator` at spawn. |
+| `animationsOwnerLocal` | `true` | server, sent | The owner client swaps its character's `Animator` for a client-created one (not replicated by Roblox), if nothing plays on the old one yet. |
+| `animationFolder` | `nil` | both | A folder of `Animation` instances that get ids up front (no bytes) and can be played by name. The server sends its folder to clients when they join. |
+| `animationFade` | `0.1` | both | Fade (seconds) used when one cannot be measured. |
+| `MaxAnimIds` | `1024` | server | Animation ids in total (folder and runtime). |
+| `AnimEventsPerSecond` | `60` | server | Animation events per player per second (burst 30); more are dropped and reported as `"animRate"`. |
+| `AnimApplyPerFrame` | `64` | client | Animation events applied per frame at most. |

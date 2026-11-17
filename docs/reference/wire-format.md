@@ -7,7 +7,7 @@ travel as a separate remote argument and are referenced by index.
 |---|---|---|---|
 | `TideU` | `UnreliableRemoteEvent` | client → server | uploads (tag 2) |
 | `TideU` | `UnreliableRemoteEvent` | server → client | relay frames (tag 1) |
-| `TideR` | `RemoteEvent` | both | control messages (tags 10–16) |
+| `TideR` | `RemoteEvent` | both | control messages (tags 10–16, animations 20–24) |
 
 ## Sample
 
@@ -88,10 +88,58 @@ instances referenced by index (1-based; 0 = none).
 | 11 | REMOVE | server → client | `u16 slot` |
 | 12 | OWNER | server → client | `u16 slot, f64 owner userId` |
 | 13 | TELEPORT | server → owner | `u16 slot, f32 x, y, z, qx, qy, qz, qw, u8 has velocity, [f32 vx, vy, vz]` |
-| 14 | HELLO | server → client | `u8 version, f64 origin x, y, z, u8 lock, u8 upload redundancy, u8 kind count`, then per kind: `u8 id, u8 name length, name, f32 rate, u8 flags (bit 0 full), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise, f32 maxFall` |
+| 14 | HELLO | server → client | `u8 version, f64 origin x, y, z, u8 flags (bit 0 lock, bit 1 animations, bit 2 animations owner-local), u8 upload redundancy, u8 kind count`, then per kind: `u8 id, u8 name length, name, f32 rate, u8 flags (bit 0 full, bit 1 animations off), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise, f32 maxFall`; with animations on, then `u16 folder instance index, u16 folder id count, u32 folder checksum` |
 | 15 | READY | client → server | (none) |
 | 16 | RESEND | client → server | `u8 count, count × u16 slot` (models that haven't streamed in) |
 
-The protocol version is `2`. A client that sees a different version warns in the output.
+The protocol version is `3`. A client that sees a different version warns in the output. With
+`Config.animations` off, no field or message below is sent and every byte above is as in version 2.
+
+## Animations (`TideR`, reliable)
+
+Only with `Config.animations` on ([guide](/guide/animations)). Events are rare (a few per second per
+entity) and must not be lost, so they go on the reliable remote.
+
+| Tag | Name | Direction | Body |
+|---|---|---|---|
+| 20 | ANIM | client → server | `f64 baseTime, u8 count, count × event` |
+| 21 | ANIM | server → client | `f64 baseTime, u16 count, count × event` (one per receiver per frame) |
+| 22 | REGISTER | client → server | `u8 length, AnimationId` (length 0: send every id) |
+| 23 | ANIMID | server → client | `u16 id, u8 length, AnimationId` |
+| 24 | ANIMSNAP | server → client | `u16 slot, f64 baseTime, u8 count, count × state` |
+
+An event:
+
+```
+u16  slot
+i16  dt               (time - baseTime) in 0.5 ms steps
+u8   op
+u16  animation id
+then by op:
+  1 PLAY      u8 fade (10 ms), u8 weight (1/100), i16 speed (1/256), u16 timePos (ms),
+              u8 priority, u8 flags (bit 0 looped)
+  2 STOP      u8 fade
+  3 SPEED     i16 speed
+  4 WEIGHT    u8 weight, u8 fade
+  5 SEEK      u16 timePos
+  6 PRIORITY  u8 priority
+```
+
+Priority is an index: 0 Core, 1 Idle, 2 Movement, 3 Action, 4 Action2, 5 Action3, 6 Action4.
+
+A snapshot state (what plays at `baseTime`): `u16 id, u8 weight, i16 speed, f32 timePos (seconds, not
+wrapped), u8 priority, u8 flags (bit 0 looped)`, 11 bytes.
+
+| Message | Bytes |
+|---|---|
+| PLAY event | 15 |
+| STOP event | 8 |
+| one event relayed alone (tag, header, event) | 26 |
+| snapshot of an entity playing 2 animations | 34 |
+
+Ids 1..n come from `Config.animationFolder` on both sides (its `Animation` descendants sorted by full
+name, then `AnimationId`); the HELLO's count and checksum (FNV-1a over the ids) let a client check its
+copy, and it asks for every id (REGISTER with length 0) when they differ. The server answers ANIMID for
+ids it assigns later, to every client.
 
 Byte counts on this page are payload only; Roblox adds its own per-call overhead on top.
