@@ -1,8 +1,8 @@
-// Shared by the Current, Ripple, Anchor and Tide documentation sites.
+// Shared by the Current, Ripple, Anchor, Tide and Lighthouse documentation sites.
 // Keep this file identical in every repository: per-site settings live in config.mts.
 import type { DefaultTheme, HeadConfig, UserConfig } from 'vitepress'
 
-export type Library = 'current' | 'ripple' | 'anchor' | 'tide'
+export type Library = 'current' | 'ripple' | 'anchor' | 'tide' | 'lighthouse'
 
 export interface Member {
   name: string
@@ -15,17 +15,19 @@ export const FAMILY: Record<Library, Member> = {
   ripple: { name: 'Ripple', role: 'State sync', site: 'https://acidgorgon.github.io/Ripple/' },
   anchor: { name: 'Anchor', role: 'Data saving', site: 'https://acidgorgon.github.io/Anchor/' },
   tide: { name: 'Tide', role: 'Motion', site: 'https://acidgorgon.github.io/Tide/' },
+  lighthouse: { name: 'Lighthouse', role: 'Profiling', site: 'https://acidgorgon.github.io/Lighthouse/' },
 }
 
-const ORDER: Library[] = ['current', 'ripple', 'anchor', 'tide']
+const ORDER: Library[] = ['current', 'ripple', 'anchor', 'tide', 'lighthouse']
 
 // The accent colour of each site is the one CSS variable --lib-accent, set here from the
-// presets in custom.css (--accent-current, --accent-ripple, --accent-anchor, --accent-tide).
+// presets in custom.css (--accent-current, --accent-ripple, --accent-anchor, --accent-tide, --accent-lighthouse).
 const THEME_COLOR: Record<Library, string> = {
   current: '#0a64a8',
   ripple: '#08767c',
   anchor: '#1c3a80',
   tide: '#5b3fa8',
+  lighthouse: '#9c5a00',
 }
 
 /** Name of the library family (Acid, 2026-11-17). */
