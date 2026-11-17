@@ -8,6 +8,8 @@
 --   * CFrame (real math), Part/Model/Weld/Camera, BulkMoveTo, Destroying, PivotTo
 --   * Player.CharacterAdded / CharacterRemoving, Players:GetPlayerByUserId
 --   * streaming simulation: world:streamOut(clientIndex, serverInstance) maps it to nil
+--   * Animator / Animation / AnimationTrack (see "Animation" below); a client may Destroy a
+--     replica locally (it then disappears from that client's view only)
 --
 -- Modules are compiled with one injected line after their `--!` directives:
 --     local game, workspace, Instance, task, warn, typeof, _G, shared, script, require = ...
@@ -205,6 +207,7 @@ function Mock.installGlobals()
 	Enum = {
 		BulkMoveMode = { FireCFrameChanged = "FireCFrameChanged", FireAllEvents = "FireAllEvents" },
 		HumanoidStateType = { FallingDown = "FallingDown", Ragdoll = "Ragdoll", Physics = "Physics", Freefall = "Freefall" },
+		AnimationPriority = Mock.AnimationPriority,
 	}
 	PhysicalProperties = {
 		new = function(density, friction, elasticity, frictionWeight, elasticityWeight)
@@ -264,6 +267,9 @@ function Signal:Wait()
 end
 
 function Signal:_fire(...)
+	if #self._fns == 0 then
+		return
+	end
 	for _, fn in table.clone(self._fns) do
 		fn(...)
 	end
@@ -354,7 +360,7 @@ local IS_A = {
 	Weld = { JointInstance = true },
 }
 
-local LAZY_SIGNALS = { Changed = true, AttributeChanged = true, Destroying = true, AncestryChanged = true }
+local LAZY_SIGNALS = { Changed = true, AttributeChanged = true, Destroying = true, AncestryChanged = true, ChildAdded = true }
 
 function InstanceMT.__index(self, key)
 	if key == "Parent" then
@@ -409,6 +415,10 @@ function InstanceMT.__newindex(self, key, value)
 		rawset(self, "_parent", value)
 		if value ~= nil then
 			table.insert(rawget(value, "_children"), self)
+			local added = rawget(value, "ChildAdded")
+			if added ~= nil then
+				added:_fire(self)
+			end
 		end
 		return
 	end
@@ -455,6 +465,8 @@ local function newInstance(className: string, name: string?)
 	elseif className == "Weld" then
 		rawset(inst, "C0", CFrameLib.new())
 		rawset(inst, "C1", CFrameLib.new())
+	elseif className == "Animation" then
+		rawset(inst, "AnimationId", "")
 	end
 	return inst
 end
@@ -543,7 +555,18 @@ function Instance.IsDescendantOf(self, ancestor): boolean
 	return false
 end
 
+function Instance.GetFullName(self)
+	local parts = {}
+	local p = self
+	while p ~= nil and rawget(p, "ClassName") ~= "DataModel" do
+		table.insert(parts, 1, rawget(p, "Name"))
+		p = p.Parent
+	end
+	return table.concat(parts, ".")
+end
+
 function Instance.Destroy(self)
+	rawset(self, "_destroyed", true)
 	local signal = rawget(self, "Destroying")
 	if signal then
 		signal:_fire()
@@ -620,6 +643,178 @@ function Instance.PivotTo(self, cf)
 		part.CFrame = mul(delta, part.CFrame)
 	end
 end
+
+--------------------------------------------------------------------------------
+-- Animation
+--------------------------------------------------------------------------------
+-- Animator: LoadAnimation, AnimationPlayed, GetPlayingAnimationTracks. Tracks advance in
+-- their environment's step right after PreAnimation (where the engine animates):
+-- WeightCurrent ramps linearly to WeightTarget over the fade, TimePosition += dt * Speed
+-- (wrapping at Length when Looped; a non-looped track stops at its end). Stop() fires
+-- Stopped at once and fades out (the track keeps advancing until faded); Ended fires
+-- when it is gone. `_replicates`: true for a server-created Animator and its client
+-- replicas, false for one a client created (Roblox does not replicate those).
+-- Track Length: the Animation's "Length" attribute, else Mock.animLength. Looped: the
+-- Animation's "Looped" attribute, else false.
+
+local PRIORITY = {}
+for i, name in { "Core", "Idle", "Movement", "Action", "Action2", "Action3", "Action4" } do
+	PRIORITY[name] = table.freeze(setmetatable({ Name = name, Value = if name == "Core" then 1000 else i - 2 }, {
+		__robloxtype = "EnumItem",
+		__tostring = function()
+			return "Enum.AnimationPriority." .. name
+		end,
+	}))
+end
+Mock.AnimationPriority = table.freeze(PRIORITY)
+Mock.animLength = 1
+
+local function setRamp(track, to: number, fade: number)
+	rawset(track, "_wFrom", rawget(track, "WeightCurrent"))
+	rawset(track, "_wTo", to)
+	rawset(track, "_wFade", fade)
+	rawset(track, "_wT", 0)
+	rawset(track, "WeightTarget", to)
+	if fade <= 0 then
+		rawset(track, "WeightCurrent", to)
+	end
+end
+
+local function activate(animator, track)
+	if not rawget(track, "_active") then
+		rawset(track, "_active", true)
+		table.insert(rawget(animator, "_tracks"), track)
+	end
+end
+
+local function newTrack(animator, animation)
+	local track = newInstance("AnimationTrack")
+	rawset(track, "Animation", animation)
+	rawset(track, "Length", Instance.GetAttribute(animation, "Length") or Mock.animLength)
+	rawset(track, "Looped", Instance.GetAttribute(animation, "Looped") == true)
+	rawset(track, "Priority", PRIORITY.Core)
+	rawset(track, "IsPlaying", false)
+	rawset(track, "Speed", 1)
+	rawset(track, "WeightTarget", 0)
+	rawset(track, "WeightCurrent", 0)
+	rawset(track, "TimePosition", 0)
+	rawset(track, "Stopped", Signal.new())
+	rawset(track, "Ended", Signal.new())
+	rawset(track, "DidLoop", Signal.new())
+	rawset(track, "_active", false)
+	setRamp(track, 0, 0)
+	rawset(track, "Play", function(self, fade, weight, speed)
+		fade = fade or 0.1
+		if not rawget(self, "IsPlaying") then
+			rawset(self, "TimePosition", 0)
+		end
+		rawset(self, "IsPlaying", true)
+		rawset(self, "Speed", speed or 1)
+		setRamp(self, weight or 1, fade)
+		activate(animator, self)
+		rawget(animator, "AnimationPlayed"):_fire(self)
+	end)
+	rawset(track, "Stop", function(self, fade)
+		if not rawget(self, "IsPlaying") then
+			return
+		end
+		rawset(self, "IsPlaying", false)
+		setRamp(self, 0, fade or 0.1)
+		rawget(self, "Stopped"):_fire()
+	end)
+	rawset(track, "AdjustSpeed", function(self, speed)
+		rawset(self, "Speed", speed or 1)
+	end)
+	rawset(track, "AdjustWeight", function(self, weight, fade)
+		setRamp(self, weight or 1, fade or 0.1)
+	end)
+	return track
+end
+
+local function advanceTrack(track, dt: number): boolean
+	local wT = rawget(track, "_wT") + dt
+	rawset(track, "_wT", wT)
+	local from, to, fade = rawget(track, "_wFrom"), rawget(track, "_wTo"), rawget(track, "_wFade")
+	rawset(track, "WeightCurrent", if fade <= 0 or wT >= fade then to else from + (to - from) * wT / fade)
+	local tp = rawget(track, "TimePosition") + dt * rawget(track, "Speed")
+	local len = rawget(track, "Length")
+	if len > 0 then
+		if rawget(track, "Looped") then
+			if tp >= len or tp < 0 then
+				tp %= len
+				rawget(track, "DidLoop"):_fire()
+			end
+		elseif tp >= len then
+			tp = len
+			if rawget(track, "IsPlaying") then
+				rawset(track, "IsPlaying", false)
+				setRamp(track, 0, 0)
+				rawset(track, "TimePosition", tp)
+				rawget(track, "Stopped"):_fire()
+			end
+		elseif tp < 0 then
+			tp = 0
+		end
+	end
+	rawset(track, "TimePosition", tp)
+	if not rawget(track, "IsPlaying") and rawget(track, "WeightCurrent") <= 0 then
+		rawset(track, "_active", false)
+		rawget(track, "Ended"):_fire()
+		return false
+	end
+	return true
+end
+
+-- Gives an instance Animator behaviour, owned (stepped) by env.
+function Mock.makeAnimator(animator, env, replicates: boolean)
+	rawset(animator, "_replicates", replicates)
+	rawset(animator, "_tracks", {})
+	rawset(animator, "AnimationPlayed", Signal.new())
+	rawset(animator, "LoadAnimation", function(self, animation)
+		assert(animation ~= nil, "LoadAnimation: animation is nil")
+		return newTrack(self, animation)
+	end)
+	rawset(animator, "GetPlayingAnimationTracks", function(self)
+		local out = {}
+		for _, track in rawget(self, "_tracks") do
+			if rawget(track, "IsPlaying") then
+				table.insert(out, track)
+			end
+		end
+		return out
+	end)
+	table.insert(env.animators, animator)
+	return animator
+end
+
+-- True for an Animator a client created (one Roblox would not replicate).
+function Mock.isClientCreated(animator): boolean
+	return rawget(animator, "_replicates") == false
+end
+
+local function stepAnimators(env, dt: number)
+	local list = env.animators
+	local i = 1
+	while i <= #list do
+		local animator = list[i]
+		if rawget(animator, "_destroyed") then
+			table.remove(list, i)
+		else
+			local tracks = rawget(animator, "_tracks")
+			local k = 1
+			while k <= #tracks do
+				if advanceTrack(tracks[k], dt) then
+					k += 1
+				else
+					table.remove(tracks, k)
+				end
+			end
+			i += 1
+		end
+	end
+end
+
+Mock.stepAnimators = stepAnimators
 
 --------------------------------------------------------------------------------
 -- Argument copying
@@ -763,6 +958,7 @@ function World:_newEnv(isServer: boolean, clientIndex: number?)
 		loading = {},
 		scripts = {},
 		clockOffset = 0,
+		animators = {},
 	}, Env)
 
 	local game = newInstance("DataModel", "Game")
@@ -839,6 +1035,9 @@ function World:_newEnv(isServer: boolean, clientIndex: number?)
 				inst = world:_newServerRemote(className)
 			else
 				inst = newInstance(className)
+				if className == "Animator" then
+					Mock.makeAnimator(inst, env, isServer)
+				end
 			end
 			if parent then
 				inst.Parent = parent
@@ -947,6 +1146,7 @@ function Env:step(dt: number)
 		rs.RenderStepped:_fire(dt)
 	end
 	rs.PreAnimation:_fire(dt)
+	stepAnimators(self, dt)
 	rs.PreSimulation:_fire(dt)
 	rs.Stepped:_fire(0, dt)
 	rs.PostSimulation:_fire(dt)
@@ -1151,6 +1351,9 @@ function World:_replicaOf(client, inst)
 			world:_send(inst, false, client, ...)
 		end)
 	end
+	if cls == "Animator" then
+		Mock.makeAnimator(replica, client, true)
+	end
 	client.replicas[inst] = replica
 	return replica
 end
@@ -1161,7 +1364,7 @@ function World:_replicaChildren(client, r)
 	if server then
 		for _, child in rawget(server, "_children") do
 			local rep = self:_replicaOf(client, child)
-			if rep then
+			if rep and not rawget(rep, "_destroyed") then
 				table.insert(out, rep)
 			end
 		end
@@ -1252,6 +1455,7 @@ function World:spawnCharacter(player, cf)
 		enabled[state] = on
 	end)
 	humanoid.Parent = model
+	Mock.makeAnimator(newInstance("Animator"), self.server, true).Parent = humanoid
 	model.Parent = self.server.Workspace
 	rawset(player, "Character", model)
 	player.CharacterAdded:_fire(model)
@@ -1269,6 +1473,31 @@ function World:spawnModel(name: string, cf, anchored: boolean?)
 	rawset(model, "PrimaryPart", root)
 	model.Parent = self.server.Workspace
 	return model
+end
+
+-- Gives a server model a Humanoid (or `controller` class) with a server-created Animator.
+function World:addAnimator(model, controller: string?)
+	local holder = newInstance(controller or "Humanoid")
+	holder.Parent = model
+	local animator = Mock.makeAnimator(newInstance("Animator"), self.server, true)
+	animator.Parent = holder
+	return animator, holder
+end
+
+-- A server Animation instance (Length / Looped as attributes).
+function World:animation(id: string, name: string?, length: number?, looped: boolean?, parent: any?)
+	local anim = newInstance("Animation", name or "Animation")
+	rawset(anim, "AnimationId", id)
+	if length ~= nil then
+		Instance.SetAttribute(anim, "Length", length)
+	end
+	if looped ~= nil then
+		Instance.SetAttribute(anim, "Looped", looped)
+	end
+	if parent ~= nil then
+		anim.Parent = parent
+	end
+	return anim
 end
 
 -- Welds (server): Part1 follows Part0 * C0 * C1^-1.

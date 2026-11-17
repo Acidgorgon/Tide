@@ -117,16 +117,26 @@ local function rxPosition(rx: any): (boolean, number, number, number)
 	return true, x, y, z
 end
 
+-- Called when a receiver's tier for an entity leaves "culled" (set by the animation channel).
+Relay.onEnter = nil :: ((rx: any, slot: number) -> ())?
+
 local function computeTier(rx: any, slot: number, has: boolean, px: number, py: number, pz: number)
 	local tiers = rx.tier
-	if not has then
-		tiers[slot] = 3
-		return
+	local old = tiers[slot]
+	local new = 3
+	if has then
+		local h = hist[slot]
+		local p = h.last % h.cap + 1
+		local dx, dy, dz = h.x[p] - px, h.y[p] - py, h.z[p] - pz
+		new = tierFor(kinds[slot], math.sqrt(dx * dx + dy * dy + dz * dz), old)
 	end
-	local h = hist[slot]
-	local p = h.last % h.cap + 1
-	local dx, dy, dz = h.x[p] - px, h.y[p] - py, h.z[p] - pz
-	tiers[slot] = tierFor(kinds[slot], math.sqrt(dx * dx + dy * dy + dz * dz), tiers[slot])
+	tiers[slot] = new
+	if old == 4 and new ~= 4 then
+		local hook = Relay.onEnter
+		if hook then
+			hook(rx, slot)
+		end
+	end
 end
 
 -- New entity: fresh tiers for every receiver (slots are reused).

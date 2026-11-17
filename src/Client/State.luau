@@ -7,6 +7,8 @@ State.started = false
 State.helloed = false
 State.localUserId = 0
 State.lockPlayers = true
+State.animations = false -- the server's Config.animations (hello)
+State.animSeeded = false
 
 State.model = {} :: { [number]: any }
 State.root = {} :: { [number]: any }
@@ -76,6 +78,17 @@ State.counters = {
 	uploadBytes = 0,
 	uploadSkipped = 0, -- unchanged samples not uploaded (idle)
 	applyErrors = 0,
+	-- animation channel
+	animSent = 0, -- events this client sent for entities it owns
+	animApplied = 0, -- events applied to remote entities
+	animSnaps = 0, -- snapshots applied
+	animIgnored = 0, -- events / snapshots for entities not animated here
+	animOverflow = 0, -- events applied early because an entity's queue was full
+	animDrift = 0, -- tracks put back on the render clock (delay changes)
+	animUnknown = 0, -- ids with no AnimationId known yet
+	animBad = 0, -- malformed animation messages
+	animSwapped = 0, -- owner-local Animator swaps
+	animSwapSkipped = 0, -- swaps skipped: game code already played on the Animator
 }
 
 return State

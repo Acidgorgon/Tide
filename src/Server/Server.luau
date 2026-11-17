@@ -19,12 +19,15 @@ local Relay = require(script.Parent.Relay)
 local Ticker = require(script.Parent.Ticker)
 local Lock = require(script.Parent.Lock)
 local Motion = require(script.Parent.Motion)
+local Anim = require(script.Parent.Anim)
+local AnimRegistry = require(Shared.AnimRegistry)
 local Options = require(Shared.Options)
 
 local Server = {}
 
 Server.addedSignal = Signal.new()
 Server.removedSignal = Signal.new()
+Server.animatedSignal = Anim.animatedSignal
 
 local remoteU: any = nil
 local remoteR: any = nil
@@ -113,20 +116,33 @@ local function writeHello(w: Control.Writer)
 	Control.f64(w, ox)
 	Control.f64(w, oy)
 	Control.f64(w, oz)
-	Control.u8(w, if Config.lockPlayers then 1 else 0)
+	local anims = Anim.active
+	local flags = if Config.lockPlayers then 1 else 0
+	if anims then
+		flags += 2
+		if Config.animationsOwnerLocal then
+			flags += 4
+		end
+	end
+	Control.u8(w, flags)
 	Control.u8(w, math.clamp(Config.UploadRedundancy, 1, 2))
 	Control.u8(w, #Kinds.list)
 	for _, kind in Kinds.list do
 		Control.u8(w, kind.id)
 		Control.str(w, kind.name)
 		Control.f32(w, kind.rate)
-		Control.u8(w, if kind.full then 1 else 0)
+		Control.u8(w, (if kind.full then 1 else 0) + (if anims and kind.animations == false then 2 else 0))
 		Control.f32(w, kind.buffer)
 		Control.f32(w, kind.extrapolate)
 		Control.f32(w, kind.keepAlive)
 		Control.f32(w, kind.maxSpeed)
 		Control.f32(w, kind.maxRise)
 		Control.f32(w, kind.maxFall)
+	end
+	if anims then
+		Control.u16(w, Control.inst(w, Config.animationFolder))
+		Control.u16(w, AnimRegistry.seeded)
+		Control.u32(w, AnimRegistry.checksum)
 	end
 end
 
@@ -159,6 +175,7 @@ local function onReady(player: any, rx: any)
 	end
 	local w = Control.writer(256)
 	writeHello(w)
+	Anim.helloIds(w)
 	for k = 1, State.count do
 		writeAdd(w, State.active[k])
 	end
@@ -166,6 +183,7 @@ local function onReady(player: any, rx: any)
 	rx.ready = true
 	table.insert(State.rxList, rx)
 	Relay.onReady(rx)
+	Anim.onReady(rx)
 end
 
 local function onResend(player: any, rx: any, b: buffer, pos: number): number
@@ -204,7 +222,7 @@ local function handleControl(player: any, payload: any)
 	end
 	local b: buffer = payload
 	local n = buffer.len(b)
-	if n > 512 then
+	if n > (if Anim.active then 8192 else 512) then
 		State.counters.badPacket += 1
 		return
 	end
@@ -216,6 +234,10 @@ local function handleControl(player: any, payload: any)
 			onReady(player, rx)
 		elseif tag == Control.RESEND then
 			pos = onResend(player, rx, b, pos)
+		elseif tag == Control.ANIM_UP and Anim.active then
+			pos = Anim.handleUp(player, rx, b, pos)
+		elseif tag == Control.REGISTER and Anim.active then
+			pos = Anim.handleRegister(player, rx, b, pos)
 		else
 			State.counters.badPacket += 1
 			return
@@ -352,6 +374,7 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 
 	writeAdd(bcast, slot)
 	Relay.onAdd(slot)
+	Anim.onAdd(slot)
 	Signal.fire(Server.addedSignal, model, kind.name, owner)
 	return handle
 end
@@ -363,6 +386,7 @@ function Server.remove(slot: number)
 	end
 	Lock.unlock(slot)
 	unwatch(slot)
+	Anim.onRemove(slot)
 	State.endTeleport(slot)
 	local conn = State.conn[slot]
 	if conn then
@@ -537,6 +561,7 @@ function Server.setOwner(slot: number, player: any?)
 	Control.u8(bcast, Control.OWNER)
 	Control.u16(bcast, slot)
 	Control.f64(bcast, if player then player.UserId else 0)
+	Anim.onOwner(slot, old)
 end
 
 --------------------------------------------------------------------------------
@@ -592,6 +617,49 @@ function Server.velocity(target: any): Vector3
 	end
 	local vx, vy, vz = Motion.velocity(slot)
 	return Vector3.new(vx, vy, vz)
+end
+
+--------------------------------------------------------------------------------
+-- Animations
+--------------------------------------------------------------------------------
+
+local function animationOf(animation: any): any
+	if type(animation) == "string" then
+		local found = AnimRegistry.byName(animation)
+		if found == nil then
+			error(`Tide.play: no Animation named "{animation}" under Config.animationFolder`, 3)
+		end
+		return found
+	end
+	assert(typeof(animation) == "Instance" and animation:IsA("Animation"), "Tide.play: animation must be an Animation or a name")
+	return animation
+end
+
+-- What Tide knows an entity plays at server time t (default now). nil when not animated.
+function Server.playing(target: any, t: number?): { [string]: any }?
+	local slot = Server.slotOf(target)
+	if slot == nil then
+		return nil
+	end
+	return Anim.playing(slot, t)
+end
+
+-- Server-owned entities: plays on the entity's Animator with an exact fade.
+function Server.play(target: any, animation: any, fade: number?, weight: number?, speed: number?): any
+	local anim = animationOf(animation)
+	local slot = Server.slotOf(target)
+	if slot == nil then
+		return nil
+	end
+	return Anim.play(slot, anim, fade, weight, speed)
+end
+
+function Server.stop(target: any, animation: any, fade: number?)
+	local anim = animationOf(animation)
+	local slot = Server.slotOf(target)
+	if slot ~= nil then
+		Anim.stop(slot, anim, fade)
+	end
 end
 
 function Server.handleOf(target: any): any
@@ -716,10 +784,12 @@ local function onFrame(dt: number)
 	end
 	lastT = t
 	Ticker.step(t, step)
+	Anim.step(t, step)
 	retryTeleports(t)
 	Lock.step()
 	flushBroadcast()
 	Relay.step(t, step)
+	Anim.flush(t)
 	countRates(t)
 end
 
@@ -776,6 +846,10 @@ function Server.start(opts: { [string]: any }?): boolean
 	remoteR.Name = "TideR"
 	remoteR.Parent = parent
 	Relay.init(remoteU)
+	Anim.init(remoteR, bcast)
+	if Anim.active then
+		Relay.onEnter = Anim.onEnter
+	end
 
 	remoteU.OnServerEvent:Connect(onUpload)
 	remoteR.OnServerEvent:Connect(onControl)

@@ -140,3 +140,103 @@ bots_22 (server-owned 30 Hz), npcs_150 (server-owned 15-20 Hz, walking). Metrics
 client CPU per frame (receive + render for one client), allocations, bytes per client per second
 (payload + an estimated 12 B per remote call), and correctness (decoded positions within 1/64 stud,
 yaw within 0.5 deg of what was sent).
+
+## Animations (v0.2)
+
+Goal: animations play on the same timeline as the body. Today Roblox's Animator replicates tracks on its own
+clock, so on other screens an action anim can start ~30-60 ms before Tide draws the body there. Tide's
+animation channel carries play/stop/adjust events stamped with server time; each receiver applies them when its
+render clock for that entity (`now - delay(entity)`) reaches the stamp, so anim and motion stay in step. Zero code
+changes for games that already play anims on the character's Animator: Tide watches the Animator.
+
+Switch: `Config.animations` = `false` (default in v0.2, Roblox replication as today) | `true`. Per kind opt-out:
+kind opt `animations = false`.
+
+### Who watches, who plays
+- Source side ("watch"): the entity's owner. Client-owned (players): the owner client watches the Animator under
+  the character's Humanoid (or AnimationController). Server-owned (bots/NPCs): the server watches the bot's Animator.
+- Receiver side ("play"): every other client. For each animated Tide entity a receiver creates its OWN local
+  Animator (client-created, so it never replicates) and destroys/ignores Roblox's replicated one locally, so
+  Roblox-replicated tracks no longer show. Tide loads tracks on the local Animator (cached per entity per anim id).
+- Owner client of a player: keeps playing on its Animator as before (sees its own anims instantly). To stop Roblox
+  also sending those tracks (wasted bytes), the owner swaps in a client-created Animator under its Humanoid at
+  character spawn (before game code loads tracks; Tide.start runs early). Flag `Config.animationsOwnerLocal`
+  (default true). Must be verified in Studio: client-created Animator does not replicate; game code that waits for
+  `Humanoid.Animator` finds the new one.
+- Server for players: removes nothing (the server never needs to play player anims).
+
+### Watching (shared module Shared/AnimWatch.luau)
+- Hook `Animator.AnimationPlayed(track)`: assign anim id (registry below), emit PLAY with fade estimate, weight
+  target, speed, time position, priority, looped.
+- Each watch step (owner upload step / server tick, max 60 Hz), for every watched track diff: IsPlaying->false or
+  WeightTarget->0 => STOP (fade estimate); Speed change => SPEED; WeightTarget change (>0.02) => WEIGHT; TimePosition
+  jump vs expected (|actual - (last + dt*speed)| > 0.05 s, loop-aware via track.Length) => SEEK; Priority change =>
+  sent inside next event (PLAY carries it; PRIORITY op otherwise).
+- Fade estimate: AnimationTrack does not expose the fade time. Estimate from WeightCurrent change over the first
+  observed step (fade ~= dt * WeightTarget / WeightCurrent), clamped [0, 1], fallback `Config.animationFade`
+  (0.1). Explicit API gives exact fades (below).
+- Allocation-light: per-track state in parallel arrays/tables reused; no per-step closures.
+
+### Explicit API (exact, optional)
+- `Tide.play(model, animation: Animation | string, fade?, weight?, speed?) -> AnimationTrack?` (owner side: plays
+  on the entity's Animator and emits PLAY with exact fade; a string = name under `Config.animationFolder`).
+- `Tide.stop(model, animation, fade?)`. Watch mode dedups: a track played via Tide.play is not re-emitted.
+
+### Registry (anim ids)
+- u16 ids for AnimationId strings. Pre-seeded from `Config.animationFolder` (an Instance, e.g.
+  ReplicatedStorage.Assets.Animations; descendants sorted by full name) on both sides, no bytes needed.
+- Unknown AnimationId seen by a watcher: client sends REGISTER (string) once on TideR; server assigns the next id
+  (cap `Config.MaxAnimIds` 1024 total, 64 new per player per minute, string length <= 100, must look like
+  "rbxassetid://<digits>" or "http..." asset URL) and broadcasts ANIMID (id, string) reliably; the client holds its
+  events for that track until the id arrives (or the server includes the string inline once). Late joiners get the
+  table in HELLO (or a following ANIMIDS message).
+
+### Wire (reliable TideR, new tags; protocol version 3)
+Anim events go reliable+ordered (they are rare, a few per second per entity, and must not be lost).
+- client -> server 20 ANIM: f64 baseTime, u8 count, count x event
+- server -> client 21 ANIM: f64 baseTime, u16 count, count x event (batched per receiver per frame, flushed with
+  the frame)
+- 22 REGISTER (c->s): u8 len, string;  23 ANIMID (s->c): u16 id, u8 len, string
+- 24 ANIMSNAP (s->c): u16 slot, u8 count, count x PLAY-shaped state (sent when a receiver starts receiving an
+  entity: ADD, entering cull range, late join), so receivers converge.
+- event: u16 slot (on c->s also u16; server checks ownership), u16 dt (0.5 ms units relative to baseTime, signed
+  i16 so events can precede baseTime), u8 op, u16 animId, then by op:
+  - PLAY(1): u8 fade (10 ms), u8 weight (1/100, 0..2.55), i16 speed (1/256, -128..128), u16 timePos (ms, 0..65.5 s),
+    u8 priority (Enum index), u8 flags (bit0 looped)
+  - STOP(2): u8 fade
+  - SPEED(3): i16 speed
+  - WEIGHT(4): u8 weight, u8 fade
+  - SEEK(5): u16 timePos
+  - PRIORITY(6): u8 priority
+- Server validates: owner check, op range, id known, stamp clamp like samples (MaxBackdate) and monotonic per
+  entity (equal allowed), per-player cap `Config.AnimEventsPerSecond` (default 60, burst 30) -> drop + onSuspicious.
+
+### Server state
+- Per entity: current playing set (animId -> {t0, timePos0, speed, weight, fade, priority, looped}), updated by
+  events, entries removed on STOP (after fade) and capped at 16 per entity (oldest dropped). Used for ANIMSNAP and
+  for `Tide.playing(model) -> {name/id -> info}` (server-side queries, e.g. "is the tackler in the slide anim at t").
+- Relay: each event goes to every receiver that currently receives the entity (not culled; tiers do not thin anim
+  events), except the owner.
+
+### Receiver playback (Client/AnimPlay.luau)
+- Queue per entity (ring of events, cap 64). Each render step, for each entity with queued events, apply all with
+  time <= renderTime(entity) = now - delay(entity). Apply = PLAY: load/cached track on the local Animator, set
+  Priority, Looped as sent, track:Play(fade, weight, speed), then TimePosition = timePos + (renderTime - eventTime)
+  * speed (catch-up, loop-wrapped). STOP: track:Stop(fade). SPEED: AdjustSpeed. WEIGHT: AdjustWeight(w, fade). SEEK:
+  TimePosition = timePos + lag*speed.
+- ANIMSNAP: stop all local tracks of that entity not in the snapshot, play the rest with fade 0 at the caught-up
+  time position.
+- Entity removed / Animator gone: stop and destroy tracks. Streaming: model missing -> keep queue (capped), apply
+  snapshot state when it arrives.
+- Bounded work: at most `Config.AnimApplyPerFrame` (default 64) events per frame overall.
+- API: `Tide.playing(model)` (client: what Tide is playing for that entity), signal
+  `Tide.animated(fn(model, op, name, info))` for gameplay hooks (e.g. VFX on a receiver exactly when the kick anim
+  starts).
+
+### Tests (mock)
+Mock gets Animator / Animation / AnimationTrack (Play/Stop/AdjustSpeed/AdjustWeight, IsPlaying, Speed, WeightTarget,
+WeightCurrent ramping by fade, TimePosition advancing with dt*speed, Looped, Length, Priority, AnimationPlayed
+signal, Stopped). Tests: owner play -> receivers play at the right render time (not before body), stop/speed/seek
+propagate, fade estimate within 0.03 s, snapshot for a late joiner and for an entity entering range, registry for
+unknown ids + caps, bots watched on the server, ownership checks, rate caps, allocation check of the watch step and
+apply step with no events (zero allocs).

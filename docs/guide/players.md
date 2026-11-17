@@ -36,7 +36,8 @@ centre of their [interest](/guide/interest) (who is near, who is far).
   sees (the p95 of recent arrival gaps, never below the kind's `buffer`). See
   [Time and rewind](/guide/time-and-rewind).
 - **Anchors** the root part of every remote character on that client (`Config.ClientAnchor`) and moves
-  them all with one `BulkMoveTo` per frame. Animations still play: the `Animator` is Roblox's as usual.
+  them all with one `BulkMoveTo` per frame. Animations still play: the `Animator` is Roblox's as usual,
+  or, with [animations](/guide/animations) on, Tide replays them in step with the body.
 
 Your own character is never touched by Tide on your client: `Tide.drawn(myCharacter)` is `nil`.
 

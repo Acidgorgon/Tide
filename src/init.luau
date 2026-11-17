@@ -18,6 +18,11 @@
 -- both
 --   Tide.added(fn(model, kindName, owner))  Tide.removed(fn(model, kindName))
 --   Tide.stats()  Tide.Config
+-- animations (Config.animations = true; game code keeps playing on the Animator as before)
+--   Tide.play(model, animation | name, fade?, weight?, speed?) -> AnimationTrack?   (owner side, exact fade)
+--   Tide.stop(model, animation | name, fade?)
+--   Tide.playing(model, t?)                 -- { [name] = info } (server: at time t; client: own or as drawn)
+--   Tide.animated(fn(model, op, name, info)) -- server: accepted events; client: events applied to remote entities
 
 local RunService = game:GetService("RunService")
 
@@ -66,6 +71,34 @@ end
 
 function Tide.stats(): { [string]: number }
 	return Side.stats()
+end
+
+-- Animations (Config.animations). Plays on an entity this side owns (server:
+-- server-owned entities; client: entities this client owns) with an exact fade;
+-- `animation` is an Animation or the name of one under Config.animationFolder.
+-- Returns the track (nil if the entity is not owned here or has no Animator).
+function Tide.play(model: Instance, animation: any, fade: number?, weight: number?, speed: number?): AnimationTrack?
+	return Side.play(model, animation, fade, weight, speed)
+end
+
+function Tide.stop(model: Instance, animation: any, fade: number?)
+	Side.stop(model, animation, fade)
+end
+
+-- What Tide knows an entity plays: { [name] = { id, name, since, timePosition,
+-- speed, weight, priority, looped, ... } }; nil when the entity is not animated
+-- by Tide. Server: at server time t (default now). Client: own entities from
+-- their Animator, remote ones at the time their body is drawn.
+function Tide.playing(model: Instance, t: number?): { [string]: any }?
+	return Side.playing(model, t)
+end
+
+-- fn(model, op, name, info) for each animation event: on the server when it is
+-- accepted (info.time = its server time), on a client when it is applied to a
+-- remote entity (in step with the body). op: "play" | "stop" | "speed" | "weight"
+-- | "seek" | "priority".
+function Tide.animated(fn: (model: Instance, op: string, name: string, info: { [string]: any }) -> ())
+	return Signal.connect(Side.animatedSignal, fn)
 end
 
 if IS_SERVER then

@@ -18,12 +18,18 @@ local Buffer = require(script.Parent.Buffer)
 local Receive = require(script.Parent.Receive)
 local Render = require(script.Parent.Render)
 local Upload = require(script.Parent.Upload)
+local AnimPlay = require(script.Parent.AnimPlay)
+local AnimOwner = require(script.Parent.AnimOwner)
+local AnimCodec = require(Shared.AnimCodec)
+local AnimRegistry = require(Shared.AnimRegistry)
+local AnimWatch = require(Shared.AnimWatch)
 local Options = require(Shared.Options)
 
 local Client = {}
 
 Client.addedSignal = Signal.new()
 Client.removedSignal = Signal.new()
+Client.animatedSignal = AnimPlay.animatedSignal
 
 local remoteU: any = nil
 local remoteR: any = nil
@@ -33,6 +39,23 @@ local ROOT_CHECK = 0.25 -- seconds between root re-resolves (streaming)
 
 local function now(): number
 	return workspace:GetServerTimeNow()
+end
+
+-- Animation channel: who watches (owner) and who plays (everyone else) an entity.
+-- The side that lets go goes first: becoming the owner, the receiver's replayed
+-- tracks stop before the watcher looks at the Animator (they are not this
+-- client's to send); no longer the owner, the watcher stops before the receiver
+-- takes the Animator over.
+local function animUpdate(slot: number)
+	if State.animations then
+		if State.mine[slot] then
+			AnimPlay.update(slot, now())
+			AnimOwner.update(slot)
+		else
+			AnimOwner.update(slot)
+			AnimPlay.update(slot, now())
+		end
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -76,6 +99,7 @@ local function setMine(slot: number, isMine: boolean)
 		end
 		anchorIfDriven(slot)
 	end
+	animUpdate(slot)
 end
 
 local function ownerPlayer(ownerId: number): any
@@ -111,6 +135,10 @@ local function removeEntity(slot: number)
 		return
 	end
 	restoreAnchor(slot)
+	if State.animations then
+		AnimOwner.detach(slot)
+		AnimPlay.release(slot)
+	end
 	local lastSlot = State.active[State.count]
 	State.active[pos] = lastSlot
 	State.index[lastSlot] = pos
@@ -145,6 +173,7 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 			if not State.mine[slot] then
 				anchorIfDriven(slot)
 			end
+			animUpdate(slot)
 			Signal.fire(Client.addedSignal, model, kind.name, ownerPlayer(ownerId))
 			return
 		end
@@ -177,7 +206,7 @@ end
 -- Control channel
 --------------------------------------------------------------------------------
 
-local function readHello(b: buffer, pos: number): number
+local function readHello(b: buffer, pos: number, insts: { any }): number
 	local version = buffer.readu8(b, pos)
 	if version ~= Control.VERSION then
 		warn(`Tide: server protocol {version}, client {Control.VERSION}`)
@@ -186,7 +215,9 @@ local function readHello(b: buffer, pos: number): number
 	local oy = buffer.readf64(b, pos + 9)
 	local oz = buffer.readf64(b, pos + 17)
 	Codec.setOrigin(ox, oy, oz)
-	State.lockPlayers = buffer.readu8(b, pos + 25) == 1
+	local flags = buffer.readu8(b, pos + 25)
+	State.lockPlayers = flags % 2 == 1
+	local anims = (flags // 2) % 2 == 1
 	Config.UploadRedundancy = buffer.readu8(b, pos + 26)
 	local n = buffer.readu8(b, pos + 27)
 	pos += 28
@@ -198,7 +229,9 @@ local function readHello(b: buffer, pos: number): number
 		pos += 2 + len
 		local kind = Kinds.bind(name, id)
 		kind.rate = buffer.readf32(b, pos)
-		kind.full = buffer.readu8(b, pos + 4) % 2 == 1
+		local kindFlags = buffer.readu8(b, pos + 4)
+		kind.full = kindFlags % 2 == 1
+		kind.animations = (kindFlags // 2) % 2 == 0
 		kind.rotation = if kind.full then "full" else "yaw"
 		kind.buffer = buffer.readf32(b, pos + 5)
 		kind.extrapolate = buffer.readf32(b, pos + 9)
@@ -212,8 +245,92 @@ local function readHello(b: buffer, pos: number): number
 			src.minBuffer = kind.buffer
 		end
 	end
+	if anims then
+		local folderIndex = buffer.readu16(b, pos)
+		local seeded = buffer.readu16(b, pos + 2)
+		local checksum = buffer.readu32(b, pos + 4)
+		pos += 8
+		if not State.animSeeded then
+			State.animSeeded = true
+			local folder = if folderIndex > 0 then insts[folderIndex] else Config.animationFolder
+			local count, sum = AnimRegistry.seed(folder)
+			if count ~= seeded or sum ~= checksum then
+				warn(`Tide: animation folder differs from the server's ({count} vs {seeded} ids); asking for the id table`)
+				AnimRegistry.reset()
+				AnimOwner.requestTable()
+			end
+		end
+		State.animations = true
+		AnimOwner.active = true
+		if (flags // 4) % 2 == 1 then
+			AnimOwner.ownerLocal = true
+		else
+			AnimOwner.unhook()
+		end
+		AnimPlay.active = true
+		for k = 1, State.count do
+			animUpdate(State.active[k])
+		end
+	elseif State.animations or AnimOwner.ownerLocal then
+		warn("Tide: the server has animations off; this client turned them on")
+		AnimOwner.unhook()
+	end
 	State.helloed = true
 	return pos
+end
+
+local function readAnim(b: buffer, pos: number, n: number): number
+	if pos + 10 > n then
+		return -1
+	end
+	local base = buffer.readf64(b, pos)
+	local count = buffer.readu16(b, pos + 8)
+	pos += 10
+	local tick = AnimCodec.TICK
+	for _ = 1, count do
+		local np, slot, dt, op, id, fade, weight, speed, timePos, prio, looped = AnimCodec.read(b, pos, n)
+		if np < 0 then
+			return -1
+		end
+		pos = np
+		if State.index[slot] ~= nil then
+			AnimPlay.event(slot, base + dt * tick, op, id, fade, weight, speed, timePos, prio, looped)
+		end
+	end
+	return pos
+end
+
+local function readSnap(b: buffer, pos: number, n: number): number
+	if pos + 11 > n then
+		return -1
+	end
+	local slot = buffer.readu16(b, pos)
+	local base = buffer.readf64(b, pos + 2)
+	local count = buffer.readu8(b, pos + 10)
+	pos += 11
+	if pos + count * AnimCodec.STATE > n then
+		return -1
+	end
+	if State.index[slot] ~= nil then
+		AnimPlay.snapshot(slot, base, b, pos, count, now())
+	end
+	return pos + count * AnimCodec.STATE
+end
+
+local function readAnimId(b: buffer, pos: number, n: number): number
+	if pos + 3 > n then
+		return -1
+	end
+	local id = buffer.readu16(b, pos)
+	local len = buffer.readu8(b, pos + 2)
+	if pos + 3 + len > n then
+		return -1
+	end
+	if id > 0 then
+		AnimRegistry.bind(id, buffer.readstring(b, pos + 3, len))
+		AnimPlay.idsBound()
+	end
+	return pos + 3 + len
 end
 
 local function handleControl(payload: any, insts: any)
@@ -228,7 +345,7 @@ local function handleControl(payload: any, insts: any)
 		local tag = buffer.readu8(b, pos)
 		pos += 1
 		if tag == Control.HELLO then
-			pos = readHello(b, pos)
+			pos = readHello(b, pos, insts)
 		elseif tag == Control.ADD then
 			local slot = buffer.readu16(b, pos)
 			local kindId = buffer.readu8(b, pos + 2)
@@ -286,6 +403,18 @@ local function handleControl(payload: any, insts: any)
 					part.AssemblyLinearVelocity = vel
 				end
 				Upload.flagTeleport(slot, now())
+			end
+		elseif tag == Control.ANIM or tag == Control.ANIMSNAP or tag == Control.ANIMID then
+			if tag == Control.ANIM then
+				pos = readAnim(b, pos, n)
+			elseif tag == Control.ANIMSNAP then
+				pos = readSnap(b, pos, n)
+			else
+				pos = readAnimId(b, pos, n)
+			end
+			if pos < 0 then
+				State.counters.animBad += 1
+				return
 			end
 		else
 			warn(`Tide: unknown control tag {tag}`)
@@ -372,6 +501,7 @@ local function onPreRender(dt: number)
 	end
 	lastRender = t
 	Render.step(t, step)
+	AnimPlay.step(t, step)
 end
 
 local function onHeartbeat(dt: number)
@@ -382,6 +512,7 @@ local function onHeartbeat(dt: number)
 	end
 	lastBeat = t
 	Upload.step(t)
+	AnimOwner.step(t, step)
 	retryModels(step)
 	checkRoots(step)
 end
@@ -426,6 +557,11 @@ function Client.start(opts: { [string]: any }?): boolean
 	remoteU = u
 	remoteR = r
 	Upload.init(remoteU)
+	AnimOwner.init(remoteR)
+	if Config.animations and Config.animationsOwnerLocal then
+		AnimOwner.ownerLocal = true
+		AnimOwner.hookCharacters() -- swap at spawn, before game code loads tracks
+	end
 	remoteU.OnClientEvent:Connect(onRelay)
 	remoteR.OnClientEvent:Connect(onControl)
 	RunService.PreRender:Connect(onPreRender)
@@ -597,6 +733,62 @@ function Client.sampleInfo(model: any, into: { [string]: any }?): { [string]: an
 		info.jitter = 0
 	end
 	return info
+end
+
+--------------------------------------------------------------------------------
+-- Animations
+--------------------------------------------------------------------------------
+
+local function animationOf(animation: any): any
+	if type(animation) == "string" then
+		local found = AnimRegistry.byName(animation)
+		if found == nil then
+			error(`Tide.play: no Animation named "{animation}" under Config.animationFolder`, 3)
+		end
+		return found
+	end
+	assert(typeof(animation) == "Instance" and animation:IsA("Animation"), "Tide.play: animation must be an Animation or a name")
+	return animation
+end
+
+-- Own entities: what the watched Animator plays. Remote ones: what Tide plays
+-- for them at their render time. nil when the entity is not animated by Tide.
+function Client.playing(model: any): { [string]: any }?
+	local slot = slotOf(model)
+	if slot == nil or not State.animations then
+		return nil
+	end
+	if State.mine[slot] then
+		local w = AnimOwner.watchOf(slot)
+		return if w ~= nil then AnimWatch.describe(w, AnimRegistry.name) else nil
+	end
+	return AnimPlay.playing(slot, now())
+end
+
+-- Entities this client owns: plays on the entity's Animator with an exact fade.
+function Client.play(model: any, animation: any, fade: number?, weight: number?, speed: number?): any
+	local anim = animationOf(animation)
+	local slot = slotOf(model)
+	if slot == nil or not State.mine[slot] then
+		return nil
+	end
+	local animator = AnimOwner.animatorOf(slot)
+	if animator == nil then
+		return nil
+	end
+	return AnimWatch.play(animator, anim, fade, weight, speed)
+end
+
+function Client.stop(model: any, animation: any, fade: number?)
+	local anim = animationOf(animation)
+	local slot = slotOf(model)
+	if slot == nil or not State.mine[slot] then
+		return
+	end
+	local animator = AnimOwner.animatorOf(slot)
+	if animator ~= nil then
+		AnimWatch.stop(animator, anim, fade)
+	end
 end
 
 function Client.stats(): { [string]: number }
