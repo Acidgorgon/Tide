@@ -117,22 +117,32 @@ local function rxPosition(rx: any): (boolean, number, number, number)
 	return true, x, y, z
 end
 
--- Called when a receiver's tier for an entity leaves "culled" (set by the animation channel).
+-- Called when a receiver's tier for an entity leaves "culled" (animation channel, timeline state).
 Relay.onEnter = nil :: ((rx: any, slot: number) -> ())?
+-- Called when it becomes "culled" (also when an entity starts out culled).
+Relay.onLeave = nil :: ((rx: any, slot: number) -> ())?
 
 local function computeTier(rx: any, slot: number, has: boolean, px: number, py: number, pz: number)
 	local tiers = rx.tier
 	local old = tiers[slot]
 	local new = 3
-	if has then
+	local kind = kinds[slot]
+	if kind.motion == false then
+		new = 1 -- state-only: no position, never culled
+	elseif has then
 		local h = hist[slot]
 		local p = h.last % h.cap + 1
 		local dx, dy, dz = h.x[p] - px, h.y[p] - py, h.z[p] - pz
-		new = tierFor(kinds[slot], math.sqrt(dx * dx + dy * dy + dz * dz), old)
+		new = tierFor(kind, math.sqrt(dx * dx + dy * dy + dz * dz), old)
 	end
 	tiers[slot] = new
 	if old == 4 and new ~= 4 then
 		local hook = Relay.onEnter
+		if hook then
+			hook(rx, slot)
+		end
+	elseif new == 4 and old ~= 4 then
+		local hook = Relay.onLeave
 		if hook then
 			hook(rx, slot)
 		end

@@ -55,6 +55,12 @@ local Config = {
 	MaxAnimIds = 1024, -- registered animation ids in total (folder + runtime)
 	AnimEventsPerSecond = 60, -- animation events per player per second (token bucket, burst 30)
 	AnimApplyPerFrame = 64, -- client: animation events applied per frame at most
+
+	-- Timeline state (v0.3; see Shared/StateSchema, Server/StateLog, Client/StateApply). On when a
+	-- kind has a schema (Tide.state); without one nothing changes.
+	StateHistory = 32, -- server: changes kept per entity per field for Tide.stateAt (field option `history` overrides)
+	StateReplay = 1.0, -- server: a snapshot carries the values in effect this many seconds ago plus the changes since
+	StateApplyPerFrame = 128, -- client: state changes applied per frame at most
 }
 
 return Config

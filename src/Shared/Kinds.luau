@@ -22,6 +22,7 @@ export type Kind = {
 	maxRise: number, -- studs/s upwards
 	keepAlive: number, -- idle keep-alive (s): server-owned samples and client uploads
 	animations: boolean, -- false: this kind's animations stay Roblox's (Config.animations opt-out)
+	motion: boolean, -- false: state-only entities (no samples, no relay, no apply; v0.3 timeline state)
 	-- runtime (server ticker)
 	acc: number,
 	tick: boolean,
@@ -51,6 +52,7 @@ local FIELDS = {
 	maxRise = "number",
 	keepAlive = "number",
 	animations = "boolean",
+	motion = "boolean",
 }
 
 local function newKind(name: string): Kind
@@ -73,6 +75,7 @@ local function newKind(name: string): Kind
 		maxRise = 60,
 		keepAlive = 0.5,
 		animations = true,
+		motion = true,
 		acc = 0,
 		tick = false,
 	}

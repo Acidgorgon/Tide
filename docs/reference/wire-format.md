@@ -7,7 +7,7 @@ travel as a separate remote argument and are referenced by index.
 |---|---|---|---|
 | `TideU` | `UnreliableRemoteEvent` | client → server | uploads (tag 2) |
 | `TideU` | `UnreliableRemoteEvent` | server → client | relay frames (tag 1) |
-| `TideR` | `RemoteEvent` | both | control messages (tags 10–16, animations 20–24) |
+| `TideR` | `RemoteEvent` | both | control messages (tags 10–16, animations 20–24, timeline state 30–32) |
 
 ## Sample
 
@@ -88,12 +88,13 @@ instances referenced by index (1-based; 0 = none).
 | 11 | REMOVE | server → client | `u16 slot` |
 | 12 | OWNER | server → client | `u16 slot, f64 owner userId` |
 | 13 | TELEPORT | server → owner | `u16 slot, f32 x, y, z, qx, qy, qz, qw, u8 has velocity, [f32 vx, vy, vz]` |
-| 14 | HELLO | server → client | `u8 version, f64 origin x, y, z, u8 flags (bit 0 lock, bit 1 animations, bit 2 animations owner-local), u8 upload redundancy, u8 kind count`, then per kind: `u8 id, u8 name length, name, f32 rate, u8 flags (bit 0 full, bit 1 animations off), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise, f32 maxFall`; with animations on, then `u16 folder instance index, u16 folder id count, u32 folder checksum` |
+| 14 | HELLO | server → client | `u8 version, f64 origin x, y, z, u8 flags (bit 0 lock, bit 1 animations, bit 2 animations owner-local), u8 upload redundancy, u8 kind count`, then per kind: `u8 id, u8 name length, name, f32 rate, u8 flags (bit 0 full, bit 1 animations off, bit 2 state-only: motion = false), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise, f32 maxFall`; with animations on, then `u16 folder instance index, u16 folder id count, u32 folder checksum` |
 | 15 | READY | client → server | (none) |
 | 16 | RESEND | client → server | `u8 count, count × u16 slot` (models that haven't streamed in) |
 
-The protocol version is `3`. A client that sees a different version warns in the output. With
-`Config.animations` off, no field or message below is sent and every byte above is as in version 2.
+The protocol version is `4` (3: animations; 4: timeline state). A client that sees a different version
+warns in the output. With `Config.animations` off and no `Tide.state` declaration, no field or message
+below is sent and every byte above is as in version 2 (apart from the version byte).
 
 ## Animations (`TideR`, reliable)
 
@@ -141,5 +142,70 @@ Ids 1..n come from `Config.animationFolder` on both sides (its `Animation` desce
 name, then `AnimationId`); the HELLO's count and checksum (FNV-1a over the ids) let a client check its
 copy, and it asks for every id (REGISTER with length 0) when they differ. The server answers ANIMID for
 ids it assigns later, to every client.
+
+## Timeline state (`TideR`, reliable)
+
+Only for kinds with a `Tide.state` declaration ([guide](/guide/state)). Server to client only: a client
+sending any of these tags is counted (`stateRejected`), reported as `"stateFromClient"`, and the rest of
+its message is dropped.
+
+| Tag | Name | Direction | Body |
+|---|---|---|---|
+| 30 | STATE | server → client | `f64 baseTime, u16 groups, groups × group` |
+| 31 | STATESNAP | server → client | `u16 slot, f64 t0, u8 n, n × field` (values in effect at `t0`), `u16 m, m × (u16 dt, field)` (changes after `t0`, `dt` in 0.5 ms steps after `t0`) |
+| 32 | SCHEMA | server → client | `u8 kinds, kinds × schema` (in the join message, and again when a declaration changes) |
+
+A group is the changes of one entity with one stamp, for one audience:
+
+```
+u16  slot
+i16  dt               (stamp - baseTime) in 0.5 ms steps
+u8   n
+n ×  field
+```
+
+A field is `u8 id` (bit 7 set: the field's default, no value follows), then the value:
+
+| Type | Value |
+|---|---|
+| `bool`, `u8` | `u8` |
+| `u16`, `i16` | `u16`, `i16` |
+| `f32`, `f64` | `f32`, `f64` |
+| `time` | `i16` (value − stamp) in 0.5 ms steps; `-32768`, then `f64` value, when out of range |
+| `ref` | `u16 slot` (0 = nil) |
+| `enum` | `u8` index into the values, 1-based (0 = nil) |
+| `yaw` | `u16` angle × 65536 / 2π, of the direction in the XZ plane |
+| `pos` | `3 × f32` |
+| `event` | the payload by its type (nothing without one) |
+
+The STATE message goes in the same buffer (and the same remote call) as the frame's ANIM message: one
+call per receiver per frame. Groups are encoded once per frame and copied for each receiver that may
+see them (`to`, not culled).
+
+A snapshot is sent when a receiver starts getting an entity with state: on joining, when the entity
+comes back inside its cull range, and on an owner change (owner-only / others fields). It holds the
+changes that receiver missed (tracked per receiver): those after `t0 = now - Config.StateReplay` one by
+one, and for older ones the field's value at `t0`.
+
+A schema per kind: `u8 kind id, u32 checksum, u8 field count`, then per field in id order (fields
+sorted by name):
+
+```
+u8   name length, name
+u8   type             1 bool, 2 u8, 3 u16, 4 i16, 5 f32, 6 f64, 7 time, 8 ref, 9 enum, 10 event, 11 yaw, 12 pos
+u8   flags            bits 0-1 to (0 all, 1 owner, 2 others, 3 server), bit 2 arrival, bit 3 mirror,
+                      bit 4 mirror on player, bit 5 default, bit 6 mirrorNil
+[event]              u8 payload type (0 none)
+[enum, enum payload] u8 count, count × (u8 length, string)
+[mirror]             u8 length, attribute name
+[mirrorNil]          u8 tag (1 string, 2 number, 3 boolean), then u8 length + string | f64 | u8
+[default]            u8 (bool) | u8 index (enum) | 3 × f32 (yaw, pos) | f64 (other numbers, time)
+```
+
+| Message | Bytes |
+|---|---|
+| a group with one `bool` / `ref` / `time` change | 7 / 8 / 8 |
+| owner change with its i-frame window (`ref`, `time`, `time`, `ref`) | 17 |
+| one change sent alone (tag, header, group) | 18–19 |
 
 Byte counts on this page are payload only; Roblox adds its own per-call overhead on top.

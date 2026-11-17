@@ -23,6 +23,8 @@ local AnimOwner = require(script.Parent.AnimOwner)
 local AnimCodec = require(Shared.AnimCodec)
 local AnimRegistry = require(Shared.AnimRegistry)
 local AnimWatch = require(Shared.AnimWatch)
+local StateApply = require(script.Parent.StateApply)
+local StateSchema = require(Shared.StateSchema)
 local Options = require(Shared.Options)
 
 local Client = {}
@@ -30,6 +32,8 @@ local Client = {}
 Client.addedSignal = Signal.new()
 Client.removedSignal = Signal.new()
 Client.animatedSignal = AnimPlay.animatedSignal
+Client.stateChangedSignal = StateApply.changedSignal
+Client.stateFieldSignals = StateApply.fieldSignals
 
 local remoteU: any = nil
 local remoteR: any = nil
@@ -79,6 +83,7 @@ local function anchorIfDriven(slot: number)
 		and root ~= nil
 		and not State.mine[slot]
 		and kind.apply == "cframe"
+		and kind.motion ~= false
 		and State.anchoredBefore[slot] == nil
 	then
 		State.anchoredBefore[slot] = root.Anchored
@@ -139,6 +144,7 @@ local function removeEntity(slot: number)
 		AnimOwner.detach(slot)
 		AnimPlay.release(slot)
 	end
+	StateApply.onRemove(slot)
 	local lastSlot = State.active[State.count]
 	State.active[pos] = lastSlot
 	State.index[lastSlot] = pos
@@ -174,6 +180,7 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 				anchorIfDriven(slot)
 			end
 			animUpdate(slot)
+			StateApply.onModel(slot)
 			Signal.fire(Client.addedSignal, model, kind.name, ownerPlayer(ownerId))
 			return
 		end
@@ -196,6 +203,7 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 	State.count += 1
 	State.active[State.count] = slot
 	State.index[slot] = State.count
+	StateApply.onAdd(slot)
 	setMine(slot, ownerId ~= 0 and ownerId == State.localUserId)
 	if model ~= nil then
 		Signal.fire(Client.addedSignal, model, kind.name, ownerPlayer(ownerId))
@@ -232,6 +240,7 @@ local function readHello(b: buffer, pos: number, insts: { any }): number
 		local kindFlags = buffer.readu8(b, pos + 4)
 		kind.full = kindFlags % 2 == 1
 		kind.animations = (kindFlags // 2) % 2 == 0
+		kind.motion = (kindFlags // 4) % 2 == 0
 		kind.rotation = if kind.full then "full" else "yaw"
 		kind.buffer = buffer.readf32(b, pos + 5)
 		kind.extrapolate = buffer.readf32(b, pos + 9)
@@ -404,6 +413,18 @@ local function handleControl(payload: any, insts: any)
 				end
 				Upload.flagTeleport(slot, now())
 			end
+		elseif tag == Control.STATE or tag == Control.STATESNAP or tag == Control.SCHEMA then
+			if tag == Control.STATE then
+				pos = StateApply.readState(b, pos, n)
+			elseif tag == Control.STATESNAP then
+				pos = StateApply.readSnap(b, pos, n)
+			else
+				pos = StateApply.readSchemas(b, pos, n)
+			end
+			if pos < 0 then
+				State.counters.stateBad += 1
+				return
+			end
 		elseif tag == Control.ANIM or tag == Control.ANIMSNAP or tag == Control.ANIMID then
 			if tag == Control.ANIM then
 				pos = readAnim(b, pos, n)
@@ -502,6 +523,7 @@ local function onPreRender(dt: number)
 	lastRender = t
 	Render.step(t, step)
 	AnimPlay.step(t, step)
+	StateApply.step(t)
 end
 
 local function onHeartbeat(dt: number)
@@ -789,6 +811,51 @@ function Client.stop(model: any, animation: any, fade: number?)
 	if animator ~= nil then
 		AnimWatch.stop(animator, anim, fade)
 	end
+end
+
+--------------------------------------------------------------------------------
+-- Timeline state
+--------------------------------------------------------------------------------
+
+-- Tide.state on a client: only compared with the server's (which is the one used).
+function Client.state(kindName: string, fields: { [string]: any })
+	StateSchema.define(kindName, fields)
+end
+
+-- Value as drawn: applied when this client's clock for the entity reached its stamp.
+function Client.get(model: any, field: string): (any, any)
+	local slot = slotOf(model)
+	if slot == nil then
+		return nil, nil
+	end
+	return StateApply.get(slot, field)
+end
+
+-- Newest received value (may be ahead of the drawing) and its stamp.
+function Client.peek(model: any, field: string): (any, number?)
+	local slot = slotOf(model)
+	if slot == nil then
+		return nil, nil
+	end
+	return StateApply.peek(slot, field)
+end
+
+-- Server time this entity is drawn at (its state applies at this clock). Compare "until"
+-- times against it instead of GetServerTimeNow().
+function Client.timeOf(model: any): number
+	local t = now()
+	local slot = slotOf(model)
+	if slot == nil then
+		return t
+	end
+	return StateApply.timeOf(slot, t)
+end
+
+-- Supplies the clock for an entity whose drawing game code owns (fn(now) -> server time).
+function Client.clock(model: any, fn: ((now: number) -> number)?)
+	assert(model ~= nil, "Tide.clock: model expected")
+	assert(fn == nil or type(fn) == "function", "Tide.clock: fn must be a function or nil")
+	StateApply.clocks[model] = fn
 end
 
 function Client.stats(): { [string]: number }

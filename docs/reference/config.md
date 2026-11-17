@@ -85,3 +85,15 @@ See [Players: the lock](/guide/players#the-lock).
 | `MaxAnimIds` | `1024` | server | Animation ids in total (folder and runtime). |
 | `AnimEventsPerSecond` | `60` | server | Animation events per player per second (burst 30); more are dropped and reported as `"animRate"`. |
 | `AnimApplyPerFrame` | `64` | client | Animation events applied per frame at most. |
+
+## Timeline state
+
+On for kinds with a [`Tide.state`](/reference/api#tide-state) declaration; without one, nothing changes.
+
+| Field | Default | Side | Meaning |
+|---|---|---|---|
+| `StateHistory` | `32` | server | Changes kept per entity per field for `Tide.stateAt` (the field option `history` overrides it). |
+| `StateReplay` | `1.0` | server | A snapshot (late join, back in range) carries the values in effect this many seconds ago, then every change since. |
+| `StateApplyPerFrame` | `128` | client | State changes applied per frame at most. |
+
+`MaxBackdate` (1 s) also bounds how far back a `Tide.set` stamp may go.

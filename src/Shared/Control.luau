@@ -12,18 +12,24 @@
 --   14 HELLO    u8 version, f64 origin x, y, z, u8 flags (bit0 lock, bit1 animations, bit2 animations
 --               owner-local), u8 upload redundancy, u8 kind count,
 --               per kind: u8 id, u8 name length, name, f32 rate, u8 flags (bit0 full, bit1 animations
---               off for this kind), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise,
+--               off for this kind, bit2 state-only: motion = false), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise,
 --               f32 maxFall,
 --               only with animations: u16 animation folder instance index, u16 folder id count,
 --               u32 folder checksum
 --   21 ANIM     f64 baseTime, u16 count, count x event (see Shared/AnimCodec)
 --   23 ANIMID   u16 id, u8 length, AnimationId string
 --   24 ANIMSNAP u16 slot, f64 baseTime, u8 count, count x state (see Shared/AnimCodec)
+--   30 STATE    f64 baseTime, u16 groups, groups x (u16 slot, i16 dt (0.5 ms vs baseTime), u8 n,
+--               n x (u8 field id [bit7: the field's default, no value], value)) (see Shared/StateSchema)
+--   31 STATESNAP u16 slot, f64 t0, u8 n, n x (u8 field [bit7], value): values in effect at t0;
+--               u16 m, m x (u16 dt (0.5 ms after t0), u8 field [bit7], value): changes after t0
+--   32 SCHEMA   u8 kinds, kinds x schema (see Shared/StateSchema)
 -- client -> server
 --   15 READY
 --   16 RESEND   u8 count, count x u16 slot   (models that did not arrive, e.g. streaming)
 --   20 ANIM     f64 baseTime, u8 count, count x event
 --   22 REGISTER u8 length, AnimationId string (length 0: send me every id)
+--   (30-32 are server -> client only: a client sending them is counted (stateRejected) and dropped)
 
 local Control = {}
 
@@ -39,7 +45,10 @@ Control.ANIM = 21
 Control.REGISTER = 22
 Control.ANIMID = 23
 Control.ANIMSNAP = 24
-Control.VERSION = 3 -- 2: TELEPORT velocity, HELLO keepAlive; 3: animation channel
+Control.STATE = 30
+Control.STATESNAP = 31
+Control.SCHEMA = 32
+Control.VERSION = 4 -- 2: TELEPORT velocity, HELLO keepAlive; 3: animation channel; 4: timeline state
 
 export type Writer = {
 	b: buffer,
@@ -62,6 +71,15 @@ local function ensure(w: Writer, n: number)
 		buffer.copy(nb, 0, w.b, 0, w.pos)
 		w.b = nb
 	end
+end
+
+Control.ensure = ensure
+
+-- Appends len bytes of src (from offset).
+function Control.bytes(w: Writer, src: buffer, offset: number, len: number)
+	ensure(w, len)
+	buffer.copy(w.b, w.pos, src, offset, len)
+	w.pos += len
 end
 
 function Control.u8(w: Writer, v: number)
