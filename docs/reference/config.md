@@ -1,0 +1,75 @@
+# Config
+
+`Tide.Config` holds every setting. Change fields before `Tide.start()`, or pass them in the start
+options (each value must have the type of the default; unknown names are errors):
+
+```lua
+Tide.Config.HistorySize = 256
+Tide.start({ players = true, lockMode = "anchored" })
+```
+
+**Side** says where a field is read. Server fields marked *sent* are sent to clients when they join,
+so clients use the server's value.
+
+## Wire
+
+| Field | Default | Side | Meaning |
+|---|---|---|---|
+| `origin` | `Vector3.new(0, 0, 0)` | server, sent | Centre of position quantization. Packed positions cover ±1024 studs per axis around it; further out a record carries a 12-byte absolute position. |
+| `MaxPacket` | `900` | server | Bytes per unreliable relay packet (Roblox drops unreliable payloads over 1000 B). |
+| `UploadRedundancy` | `1` | server, sent | `2` makes each upload also resend the previous sample, to survive a dropped packet. |
+
+## Server receive
+
+| Field | Default | Meaning |
+|---|---|---|
+| `MaxBackdate` | `1.0` | Seconds a client stamp may lie before its arrival (older stamps are clamped). |
+| `MaxAhead` | `0.005` | Seconds a client stamp may lie after its arrival (clamped). |
+| `PlayerBytesPerSecond` | `8192` | Upload byte cap per player (token bucket). |
+| `PlayerBytesPerFrame` | `1024` | Upload byte cap per player per server frame. |
+| `MaxUploadCount` | `16` | Records per upload packet. |
+| `TeleportGrantRadius` | `4.0` | Studs between a server teleport's target and the owner's flagged sample that confirms it. Until then the owner's uploads are dropped. |
+| `TeleportRetry` | `1.0` | Seconds before an unconfirmed teleport command is sent to the owner again. |
+| `TeleportTries` | `3` | Sends before `onSuspicious(player, "teleportIgnored")` (called once; the server keeps holding the target and resending). |
+| `SpeedResync` | `1.0` | Seconds of continuous speed rejections before the owner is teleported back to the server's pose (`0`: never). |
+| `teleportOnWrite` | `true` | Server writes to a client-owned root's `CFrame` (`root.CFrame =`, `model:PivotTo`) become teleports. Writes onto the held pose are ignored. Verify in Studio that `PivotTo` fires the root's `CFrame` changed signal in your setup. |
+| `teleportOnWriteVelocity` | `"zero"` | Velocity of those teleports: `"zero"` stops the character (a server `AssemblyLinearVelocity` write never reaches a locked owner), `"keep"` leaves the owner's velocity. |
+
+## Server history and relay
+
+| Field | Default | Meaning |
+|---|---|---|
+| `HistorySize` | `128` | Samples kept per entity for `Tide.at` / `Tide.latest`. |
+| `ReceiverBytesPerSecond` | `40960` | Relay budget per receiving player; far records are dropped first. |
+| `InterestEvery` | `0.1` | Seconds between distance tier recomputes. |
+| `Hysteresis` | `4` | Studs of hysteresis around the `near` / `far` / `cull` boundaries. |
+| `SlotQuarantine` | `2.0` | Seconds before a freed entity slot is reused. |
+
+## Lock
+
+| Field | Default | Side | Meaning |
+|---|---|---|---|
+| `lockPlayers` | `true` | server, sent | Stop Roblox replicating the position of client-owned entities; the server's copy follows Tide's samples. |
+| `lockMode` | `"root"` | server | `"root"`: non-replicated locker inside the root part. `"anchored"`: anchored locker in the server camera (fallback). Anything else is an error at start. |
+| `lockHumanoidStates` | `false` | server | Or a list of `Enum.HumanoidStateType` disabled on the server's Humanoid while locked. |
+
+See [Players: the lock](/guide/players#the-lock).
+
+## Client
+
+| Field | Default | Meaning |
+|---|---|---|
+| `ClientRing` | `64` | Samples kept per entity on the client. |
+| `MaxBuffer` | `0.5` | Largest interpolation delay, seconds. |
+| `BufferMargin` | `0.002` | Added to the p95 of measured need. |
+| `NeedGapMax` | `0.25` | Sample gaps longer than this are idle or keep-alive gaps: not counted as need, and not used for extrapolation velocity. |
+| `SnapGap` | `1.0` | Sample gaps longer than this are treated as teleports (no sweep across). |
+| `DelaySnap` | `0.1` | Delay changes larger than this snap; smaller ones ease. |
+| `CorrectionTime` | `0.1` | Seconds to blend away a correction. |
+| `SnapDistance` | `16` | Corrections larger than this (studs) snap instead of blending. |
+| `ClientAnchor` | `true` | Anchor the root of remotely-driven entities on the client (moved with `BulkMoveTo`). |
+| `ModelRetry` | `1.0` | Seconds between asks for models that haven't arrived (StreamingEnabled). |
+| `TeleportAckTime` | `0.3` | Seconds after a server teleport during which the owner flags its uploads (and never skips idle ones). |
+| `startTimeout` | `30` | Seconds `Tide.start()` waits for the server's remotes before warning and returning `false`. |
+
+`NeedGapMax` and `SnapGap` are also read by the server's `Tide.at` interpolation.

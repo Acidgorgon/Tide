@@ -1,0 +1,12 @@
+# docs (VitePress)
+docs/node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+
+# bench / tests: Luau sources, host build and generated library copies
+bench/third_party/
+bench/host/build/
+bench/gen/
+bench/results/raw/
+
+.DS_Store

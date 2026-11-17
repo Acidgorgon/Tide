@@ -1,0 +1,9 @@
+{
+  "scenarios": [
+    {"name": "players_10", "desc": "10 client-owned characters, ~98 Hz uploads from 144 fps clients, football movement"},
+    {"name": "players_16", "desc": "16 client-owned characters, ~98 Hz uploads from 144 fps clients, football movement"},
+    {"name": "players_22", "desc": "22 client-owned characters, ~98 Hz uploads from 144 fps clients, football movement"},
+    {"name": "bots_22", "desc": "22 server-owned bots at 30 Hz (football movement), 10 idle clients"},
+    {"name": "npcs_150", "desc": "150 server-owned walkers at 20 Hz in a 500x400 area, 10 idle clients"}
+  ]
+}

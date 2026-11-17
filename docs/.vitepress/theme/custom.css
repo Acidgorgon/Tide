@@ -1,0 +1,369 @@
+/*
+ * Water theme shared by the Current, Ripple, Anchor and Tide documentation sites.
+ * Keep this file identical in every repository.
+ *
+ * Each site picks its accent with ONE variable, --lib-accent, set in config.mts
+ * (family(...) adds `:root { --lib-accent: var(--accent-<library>); }` to the head).
+ * Every brand colour below is derived from it. All text colours meet WCAG AA (4.5:1)
+ * on every background they are used on, in light and dark mode.
+ */
+
+/* ---------- Palette ---------- */
+
+:root {
+  /* Per-library accents, light mode (white text on them and them on white: >= 5.3:1) */
+  --accent-current: #0a64a8; /* ocean blue */
+  --accent-ripple: #08767c; /* aqua / teal */
+  --accent-anchor: #1c3a80; /* deep navy */
+  --accent-tide: #5b3fa8; /* moonlit violet */
+
+  /* Shared water tones */
+  --water-aqua: #0b7285;
+  --water-deep: #0b1f33;
+  --water-foam: #e8f1f8;
+
+  --accent: var(--lib-accent, var(--accent-current));
+
+  /* Surfaces and text */
+  --vp-c-bg: #ffffff;
+  --vp-c-bg-alt: #f4f8fb;
+  --vp-c-bg-elv: #ffffff;
+  --vp-c-bg-soft: #edf4f9;
+
+  --vp-c-text-1: #0b1f33;
+  --vp-c-text-2: #3b5268;
+  --vp-c-text-3: #566c82;
+
+  --vp-c-divider: #d9e5ef;
+  --vp-c-border: #c6d6e4;
+  --vp-c-gutter: #e3edf5;
+
+  --vp-c-default-1: #3b5268;
+  --vp-c-default-2: #c6d6e4;
+  --vp-c-default-3: #d9e5ef;
+  --vp-c-default-soft: rgba(59, 82, 104, 0.09);
+
+  --vp-code-block-bg: #f3f7fb;
+  --vp-code-line-highlight-color: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.dark {
+  /* Per-library accents, dark mode (on the navy backgrounds: >= 7:1) */
+  --accent-current: #5db6f0;
+  --accent-ripple: #4fd3cc;
+  --accent-anchor: #9db7f2;
+  --accent-tide: #b7a6f5;
+
+  --water-aqua: #5fd0dd;
+  --water-foam: #112338;
+
+  --vp-c-bg: #0b1828;
+  --vp-c-bg-alt: #08121f;
+  --vp-c-bg-elv: #10203a;
+  --vp-c-bg-soft: #112338;
+
+  --vp-c-text-1: #e4eef8;
+  --vp-c-text-2: #a7bccf;
+  --vp-c-text-3: #8399af;
+
+  --vp-c-divider: #1d334d;
+  --vp-c-border: #2a4562;
+  --vp-c-gutter: #050d17;
+
+  --vp-c-default-1: #a7bccf;
+  --vp-c-default-2: #2a4562;
+  --vp-c-default-3: #1d334d;
+  --vp-c-default-soft: rgba(131, 153, 175, 0.14);
+
+  --vp-code-block-bg: #0a1524;
+}
+
+/* ---------- Brand colours, all from --lib-accent ---------- */
+
+:root {
+  --vp-c-brand-1: var(--accent);
+  --vp-c-brand-2: color-mix(in srgb, var(--accent) 82%, var(--vp-c-text-1));
+  --vp-c-brand-3: var(--accent);
+  --vp-c-brand-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+
+  --vp-c-tip-1: var(--water-aqua);
+  --vp-c-tip-2: var(--water-aqua);
+  --vp-c-tip-3: var(--water-aqua);
+  --vp-c-tip-soft: color-mix(in srgb, var(--water-aqua) 12%, transparent);
+
+  --vp-c-important-1: var(--accent);
+  --vp-c-important-2: var(--accent);
+  --vp-c-important-3: var(--accent);
+  --vp-c-important-soft: var(--vp-c-brand-soft);
+
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-text: #ffffff;
+  --vp-button-brand-bg: var(--accent);
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-hover-text: #ffffff;
+  --vp-button-brand-hover-bg: color-mix(in srgb, var(--accent) 86%, #000000);
+  --vp-button-brand-active-border: transparent;
+  --vp-button-brand-active-text: #ffffff;
+  --vp-button-brand-active-bg: color-mix(in srgb, var(--accent) 76%, #000000);
+
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: linear-gradient(120deg, var(--accent) 15%, var(--water-aqua) 85%);
+  --vp-home-hero-image-background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--accent) 45%, transparent) 0%,
+    color-mix(in srgb, var(--water-aqua) 25%, transparent) 45%,
+    transparent 70%
+  );
+  --vp-home-hero-image-filter: blur(48px);
+}
+
+.dark {
+  /* Light accents in dark mode: buttons take navy text instead of white */
+  --vp-button-brand-text: #06111e;
+  --vp-button-brand-hover-text: #06111e;
+  --vp-button-brand-active-text: #06111e;
+  --vp-button-brand-hover-bg: color-mix(in srgb, var(--accent) 86%, #ffffff);
+  --vp-button-brand-active-bg: color-mix(in srgb, var(--accent) 76%, #ffffff);
+}
+
+/* ---------- Type ---------- */
+
+:root {
+  /* Inter ships with VitePress (self-hosted, no font CDN); the system stack is the fallback. */
+  --vp-font-family-base: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, 'Noto Sans', sans-serif;
+  --vp-font-family-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'JetBrains Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+}
+
+.vp-doc h1 {
+  letter-spacing: -0.02em;
+}
+
+.vp-doc h2 {
+  border-top-color: var(--vp-c-divider);
+}
+
+.vp-doc a {
+  text-underline-offset: 3px;
+}
+
+/* ---------- Home hero ---------- */
+
+.VPHome {
+  background:
+    radial-gradient(ellipse 80% 420px at 50% -60px, color-mix(in srgb, var(--accent) 16%, transparent), transparent),
+    var(--vp-c-bg);
+}
+
+.VPHero {
+  position: relative;
+}
+
+.VPHero .name {
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+.VPHero .text {
+  letter-spacing: -0.02em;
+}
+
+.VPHero .tagline {
+  color: var(--vp-c-text-2);
+}
+
+.VPHero .image-src {
+  max-width: 180px;
+  max-height: 180px;
+  border-radius: 40px;
+  box-shadow: 0 24px 60px -20px color-mix(in srgb, var(--accent) 60%, transparent);
+}
+
+@media (min-width: 640px) {
+  .VPHero .image-src {
+    max-width: 220px;
+    max-height: 220px;
+  }
+}
+
+@media (min-width: 960px) {
+  .VPHero .image-src {
+    max-width: 260px;
+    max-height: 260px;
+    border-radius: 56px;
+  }
+}
+
+/* A low wave under the hero */
+.VPHero::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -28px;
+  height: 28px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 28' preserveAspectRatio='none'%3E%3Cpath d='M0 14c20-12 40-12 60 0s40 12 60 0 40-12 60 0 40 12 60 0V0H0z'/%3E%3C/svg%3E")
+    repeat-x 0 0 / 240px 28px;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 240 28' preserveAspectRatio='none'%3E%3Cpath d='M0 14c20-12 40-12 60 0s40 12 60 0 40-12 60 0 40 12 60 0V0H0z'/%3E%3C/svg%3E")
+    repeat-x 0 0 / 240px 28px;
+}
+
+/* ---------- Home features ---------- */
+
+.VPFeatures {
+  margin-top: 24px;
+}
+
+.VPFeature {
+  border: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-bg-soft);
+  transition:
+    border-color 0.2s,
+    transform 0.2s;
+}
+
+.VPFeature:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--vp-c-divider));
+}
+
+a.VPFeature:hover,
+.VPLink.link:hover .VPFeature {
+  transform: translateY(-2px);
+}
+
+.VPFeature .icon {
+  background: var(--vp-c-brand-soft);
+  color: var(--vp-c-brand-1);
+}
+
+.VPFeature .icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+.VPFeature .title {
+  font-size: 17px;
+}
+
+/* Markdown under the hero on the home page */
+.VPHome .vp-doc {
+  max-width: 1152px;
+}
+
+/* ---------- Code ---------- */
+
+.vp-doc div[class*='language-'],
+.vp-code-group .tabs {
+  border: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc div[class*='language-'] {
+  border-radius: 10px;
+}
+
+.vp-code-group .tabs {
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  background: var(--vp-c-bg-soft);
+}
+
+.vp-code-group div[class*='language-'] {
+  border-radius: 0 0 10px 10px;
+}
+
+.vp-code-group .tabs label {
+  font-family: var(--vp-font-family-mono);
+  font-size: 13px;
+}
+
+.vp-doc :not(pre) > code {
+  border: 1px solid var(--vp-c-divider);
+  padding: 2px 6px;
+}
+
+.vp-doc a > code {
+  color: var(--vp-c-brand-1);
+}
+
+/* ---------- Containers ---------- */
+
+.custom-block {
+  border: 1px solid var(--vp-c-divider);
+  border-left-width: 4px;
+  border-radius: 10px;
+}
+
+.custom-block.info {
+  border-left-color: var(--vp-c-text-3);
+}
+
+.custom-block.tip {
+  border-left-color: var(--vp-c-tip-1);
+}
+
+.custom-block.important {
+  border-left-color: var(--accent);
+}
+
+.custom-block.warning {
+  border-left-color: var(--vp-c-warning-1);
+}
+
+.custom-block.danger,
+.custom-block.caution {
+  border-left-color: var(--vp-c-danger-1);
+}
+
+.custom-block.details {
+  border-left-color: var(--vp-c-border);
+}
+
+/* ---------- Tables ---------- */
+
+.vp-doc table {
+  /* VitePress makes tables display:block (for horizontal scroll); keep the frame on the content */
+  width: fit-content;
+  max-width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--vp-c-divider);
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+}
+
+.vp-doc th {
+  background: var(--vp-c-bg-soft);
+}
+
+.vp-doc th,
+.vp-doc td {
+  border: none;
+  border-bottom: 1px solid var(--vp-c-divider);
+}
+
+.vp-doc tr:last-child td {
+  border-bottom: none;
+}
+
+.vp-doc tr:nth-child(2n) {
+  background: transparent;
+}
+
+/* ---------- Navigation ---------- */
+
+.VPNavBarTitle .logo {
+  border-radius: 7px;
+}
+
+.VPNavBarTitle .title {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.VPSidebarItem.level-0 > .item > .text,
+.VPSidebarItem.level-0 > .item > h2 {
+  font-weight: 700;
+}
