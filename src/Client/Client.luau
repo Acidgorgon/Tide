@@ -24,6 +24,7 @@ local AnimCodec = require(Shared.AnimCodec)
 local AnimRegistry = require(Shared.AnimRegistry)
 local AnimWatch = require(Shared.AnimWatch)
 local Options = require(Shared.Options)
+local LH = require(Shared.Lighthouse)
 
 local Client = {}
 
@@ -483,7 +484,12 @@ local function retryModels(dt: number)
 			written += 1
 		end
 	end
-	remoteR:FireServer(Control.take(w))
+	local b = Control.take(w)
+	remoteR:FireServer(b)
+	local lh = LH.api
+	if lh then
+		lh.net("Tide", "Control", "out", buffer.len(b))
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -500,8 +506,15 @@ local function onPreRender(dt: number)
 		step = dt
 	end
 	lastRender = t
+	local lh = LH.api
+	if lh then
+		LH.render:begin()
+	end
 	Render.step(t, step)
 	AnimPlay.step(t, step)
+	if lh then
+		LH.render:finish()
+	end
 end
 
 local function onHeartbeat(dt: number)
@@ -511,20 +524,41 @@ local function onHeartbeat(dt: number)
 		step = dt
 	end
 	lastBeat = t
+	local lh = LH.frame()
+	if lh then
+		LH.upload:begin()
+	end
 	Upload.step(t)
 	AnimOwner.step(t, step)
+	if lh then
+		LH.upload:finish()
+	end
 	retryModels(step)
 	checkRoots(step)
 end
 
 local function onRelay(payload: any)
+	local lh = LH.api
+	if lh then
+		if typeof(payload) == "buffer" then
+			lh.net("Tide", "Relay", "in", buffer.len(payload))
+		end
+		LH.receive:begin()
+	end
 	local ok = pcall(Receive.packet, payload, now())
+	if lh then
+		LH.receive:finish()
+	end
 	if not ok then
 		State.counters.badPacket += 1
 	end
 end
 
 local function onControl(payload: any, insts: any)
+	local lh = LH.api
+	if lh and typeof(payload) == "buffer" then
+		lh.net("Tide", "Control", "in", buffer.len(payload))
+	end
 	local ok, err = pcall(handleControl, payload, insts)
 	if not ok then
 		State.counters.badPacket += 1
