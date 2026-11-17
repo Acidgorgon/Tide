@@ -86,6 +86,10 @@ end
 
 function Ticker.step(now: number, dt: number)
 	for _, kind in Kinds.list do
+		if kind.motion == false then
+			kind.tick = false -- state-only kind: nothing to sample
+			continue
+		end
 		local interval = 1 / kind.rate
 		local acc = kind.acc + dt
 		if acc >= interval then

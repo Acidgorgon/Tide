@@ -89,6 +89,15 @@ State.counters = {
 	animBad = 0, -- malformed animation messages
 	animSwapped = 0, -- owner-local Animator swaps
 	animSwapSkipped = 0, -- swaps skipped: game code already played on the Animator
+	-- timeline state
+	stateApplied = 0, -- changes applied
+	stateLate = 0, -- changes that arrived after this client's clock for the entity passed their stamp
+	stateStale = 0, -- changes older than the field's applied one (skipped)
+	stateOverflow = 0, -- changes applied early because an entity's queue was full
+	stateSnaps = 0, -- snapshots received
+	stateBad = 0, -- malformed state messages
+	stateClockErrors = 0, -- Tide.clock functions that errored or returned no number
+	stateMirrorErrors = 0, -- mirror attributes that could not be set
 }
 
 return State

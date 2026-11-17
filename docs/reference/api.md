@@ -60,6 +60,7 @@ Up to 255 kinds; names under 64 characters. Errors on an unknown option or a val
 | `apply` | `"cframe"` \| `"none"` \| `(model, CFrame) -> ()` | `"cframe"` | client | how a client applies the drawn pose |
 | `afterApply` | `false` \| `(model, CFrame) -> ()` | `false` | client | called each frame after the pose is applied (the default apply, anchoring included, still runs); errors count as `applyErrors` |
 | `animations` | boolean | `true` | server | `false`: this kind's animations stay Roblox's when `Config.animations` is on |
+| `motion` | boolean | `true` | server | `false`: a [state-only](/guide/state#state-only-entities) kind: no samples, no drawing, never culled |
 
 "Server" options are sent to clients by the server (`rate`, `rotation`, `buffer`, `extrapolate`, `keepAlive`, `maxSpeed`, `maxRise`, `maxFall`) or only
 used there; set them on the server. `apply` is read on the client; set it on the client. Built-in
@@ -169,6 +170,63 @@ Calls `fn` for each animation event. `op` is `"play"`, `"stop"`, `"speed"`, `"we
 applied to another entity, in step with its body; on the server when the event is accepted. Each call
 runs in its own thread.
 
+### Tide.state
+
+```lua
+Tide.state(kind: string, fields: { [string]: FieldOptions | string })
+```
+
+Declares the [timeline state](/guide/state) of a kind, in code both sides run. Each field is a table
+of options, or just a type name. Fields get ids by name (at most 127). Errors on an unknown type or
+option, a bad value, or, on the server, when entities of the kind already have state. The server's
+declaration is sent to clients (a client's differing declaration is warned about, and the server's is
+used). Options: `type` (`"bool"`, `"u8"`, `"u16"`, `"i16"`, `"f32"`, `"f64"`, `"time"`, `"ref"`,
+`"enum"`, `"event"`, `"yaw"`, `"pos"`), `default`, `to` (`"all"`, `"owner"`, `"others"`, `"server"`),
+`apply` (`"drawn"`, `"arrival"`), `values` (enum), `payload` (event), `mirror`, `mirrorOn`
+(`"model"`, `"player"`), `mirrorNil`, `history`. See the
+[field options](/guide/state#field-options).
+
+### Tide.get
+
+```lua
+Tide.get(target, field: string) -> any
+```
+
+- **Server:** the field's current value (the change with the newest stamp).
+- **Client:** the value as drawn: the newest change the client's clock for the entity has reached.
+
+Refs read as models (on a client, the local model), `nil` once the entity is gone. Event fields return
+the stamp of the latest fire and its payload. Unknown targets give `nil`; an unknown field is an error
+(on a client, before the server's schema arrives, `nil`).
+
+### Tide.timeOf
+
+```lua
+Tide.timeOf(target) -> number
+```
+
+The server time an entity is at. Server: now. Client: the time its body and its state are drawn at
+(`now - Tide.delay(model)` for remote entities, now for your own, the [clock](#tide-clock) you gave for
+state-only ones). Never goes back. Compare `time` fields against it.
+
+### Tide.changed
+
+```lua
+Tide.changed(model: Instance, field: string, fn: (value, old, t: number) -> ()) -> Connection
+```
+
+Calls `fn` when that field of that model changes: on the server when it is set, on a client in the
+frame it applies. Event fields call `fn(payload, nil, t)` on each fire. Works before the model is
+registered.
+
+### Tide.stateChanged
+
+```lua
+Tide.stateChanged(fn: (model: Instance, field: string, value, old, t: number) -> ()) -> Connection
+```
+
+The same for every field of every entity.
+
 ### Tide.stats
 
 ```lua
@@ -181,8 +239,10 @@ A copy of the counters.
 |---|---|
 | server | `packets`, `samples`, `badPacket`, `owner`, `stamp`, `nan`, `speed`, `rate`, `errors`, `relayBytes`, `relayPackets`, `budgetDropped`, `spacing` (uploads closer than half an interval), `teleportWait` (owner uploads dropped while a teleport is unacknowledged), `teleportIgnored`, `inBytes` (all bytes received from clients), `inBytesPerSecond`, `relayBytesPerSecond` (both over the last second) |
 | server, animations | `animEvents` (accepted), `animBad` (malformed), `animRate`, `animOwner`, `animStamp` (older than the entity's previous event), `animUnknown` (unknown id or priority), `animDropped` (kind opted out), `animRegister` (refused id requests), `animIdsFull`, `animRelayBytes` |
+| server, state | `stateSets` (changes recorded), `stateSame` (sets of the current value, skipped), `stateClamped` (stamps clamped), `stateSnaps`, `stateRelayBytes`, `stateRejected` (state messages from clients), `stateNoEntity` (sets on non-entities, ignored) |
 | client | `packets`, `records`, `badPacket`, `unknownSlot`, `late`, `uploads`, `uploadBytes`, `uploadSkipped` (idle samples not uploaded), `applyErrors` |
 | client, animations | `animSent`, `animApplied`, `animSnaps`, `animIgnored`, `animOverflow` (applied early: queue full), `animDrift` (tracks put back on the render clock), `animUnknown`, `animBad`, `animSwapped`, `animSwapSkipped` (owner `Animator` already in use) |
+| client, state | `stateApplied`, `stateLate` (arrived after its time), `stateStale` (older than the applied value, skipped), `stateOverflow` (applied early: queue full), `stateSnaps`, `stateBad` (malformed), `stateClockErrors`, `stateMirrorErrors` |
 
 See [Security](/guide/security#reporting) for what the server counters mean.
 
@@ -234,6 +294,50 @@ if handle then
 	handle:teleport(CFrame.new(0, 5, 0))
 end
 ```
+
+### Tide.set
+
+```lua
+Tide.set(target, field: string, value: any, stamp: number?)
+```
+
+Sets a [state](/guide/state) field. Stamped now, or at `stamp` clamped to `[now - Config.MaxBackdate,
+now]` (on the 0.5 ms grid). `nil` sets the field's default. A stamp older than the field's newest change
+only adds to the history. Setting the current value does nothing. Errors on an unknown field, an event
+field, or a value of the wrong type (a ref must be a Tide entity, model or handle). Does nothing if the
+target isn't registered.
+
+```lua
+Tide.set(ball, "Owner", character)
+Tide.set(character, "SlideAt", pressAt, pressAt)
+```
+
+### Tide.fire
+
+```lua
+Tide.fire(target, field: string, payload: any?, stamp: number?)
+```
+
+Fires an event field, with its payload if the field declares one. Stamps as `Tide.set`.
+
+### Tide.stateAt
+
+```lua
+Tide.stateAt(target, field: string, t: number) -> any
+```
+
+The value in effect at server time `t`: the newest change stamped at or before `t`, from the field's
+history (`history` changes, default `Config.StateHistory`). Before its first change: the default. Refs
+to entities that are gone read `nil`. Event fields: the stamp and payload of the latest fire at or
+before `t`.
+
+### Tide.changedAt
+
+```lua
+Tide.changedAt(target, field: string, t0: number, t1: number) -> number?
+```
+
+The stamp of the first change of the field in `(t0, t1]`, or `nil`.
 
 ### Tide.onSuspicious
 
@@ -311,6 +415,25 @@ Tide.velocity(model: Instance) -> Vector3
 ```
 
 The drawn velocity in studs per second (from frame to frame). Zero if not drawn.
+
+### Tide.peek
+
+```lua
+Tide.peek(model: Instance, field: string) -> (any, number?)
+```
+
+The newest value of a state field this client has received (which may be ahead of the drawing), and
+its stamp. Before anything arrived: the applied value and `nil`.
+
+### Tide.clock
+
+```lua
+Tide.clock(model: Instance, fn: ((now: number) -> number)?)
+```
+
+Gives the clock a [state-only](/guide/state#state-only-entities) entity's state applies at, for things
+your own code draws: `fn(now)` returns the server time the model is drawn at. `nil` removes it. Kept
+monotonic per entity. (On the server it does nothing, so shared code may call it.)
 
 ### Tide.sampleInfo
 

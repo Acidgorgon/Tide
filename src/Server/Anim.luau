@@ -229,7 +229,7 @@ function Anim.onAdd(slot: number)
 	end
 	setPrevOwner(slot, nil)
 	detach(slot)
-	if State.kind[slot].animations == false then
+	if State.kind[slot].animations == false or State.kind[slot].motion == false then
 		sets[slot] = nil
 		return
 	end
@@ -540,58 +540,73 @@ local function writeSnap(w: Control.Writer, slot: number, t: number)
 	buffer.writeu8(w.b, countPos, c)
 end
 
+function Anim.pending(): boolean
+	return Anim.active and (nev > 0 or snapsPending)
+end
+
+-- Writes this frame's events (and pending snapshots) one receiver gets into w.
+function Anim.writeRx(rx: any, w: Control.Writer, t: number)
+	local me = rx.player
+	local tiers = rx.tier
+	local count = 0
+	local countPos = 0
+	for i = 1, nev do
+		local slot = evSlot[i]
+		if sets[slot] ~= nil and owner[slot] ~= me and tiers[slot] ~= 4 then
+			if count == 0 then
+				Control.u8(w, Control.ANIM)
+				Control.f64(w, t)
+				countPos = w.pos
+				Control.u16(w, 0)
+			end
+			AnimCodec.write(
+				w,
+				slot,
+				qDt(evT[i] - t),
+				evOp[i],
+				evId[i],
+				evFade[i],
+				evWeight[i],
+				evSpeed[i],
+				evTp[i],
+				evPrio[i],
+				evLooped[i]
+			)
+			count += 1
+		end
+	end
+	if count > 0 then
+		buffer.writeu16(w.b, countPos, count)
+	end
+	local snaps = rx.animSnap
+	if snaps ~= nil and #snaps > 0 then
+		for _, slot in snaps do
+			if sets[slot] ~= nil and index[slot] ~= nil and owner[slot] ~= me then
+				writeSnap(w, slot, t)
+			end
+		end
+		table.clear(snaps)
+	end
+end
+
+function Anim.flushDone()
+	nev = 0
+	snapsPending = false
+end
+
 -- Sends this frame's events (and pending snapshots) to each receiver, after the
--- broadcast (ADD, ANIMID) went out.
+-- broadcast (ADD, ANIMID) went out. (The server's frame merges this with timeline
+-- state into one message per receiver; this is the animation-only form.)
 function Anim.flush(t: number)
 	if nev == 0 and not snapsPending then
 		return
 	end
 	local w = out
 	for _, rx in State.rxList do
-		local me = rx.player
-		local tiers = rx.tier
-		local count = 0
-		local countPos = 0
-		for i = 1, nev do
-			local slot = evSlot[i]
-			if sets[slot] ~= nil and owner[slot] ~= me and tiers[slot] ~= 4 then
-				if count == 0 then
-					Control.u8(w, Control.ANIM)
-					Control.f64(w, t)
-					countPos = w.pos
-					Control.u16(w, 0)
-				end
-				AnimCodec.write(
-					w,
-					slot,
-					qDt(evT[i] - t),
-					evOp[i],
-					evId[i],
-					evFade[i],
-					evWeight[i],
-					evSpeed[i],
-					evTp[i],
-					evPrio[i],
-					evLooped[i]
-				)
-				count += 1
-			end
-		end
-		if count > 0 then
-			buffer.writeu16(w.b, countPos, count)
-		end
-		local snaps = rx.animSnap
-		if snaps ~= nil and #snaps > 0 then
-			for _, slot in snaps do
-				if sets[slot] ~= nil and index[slot] ~= nil and owner[slot] ~= me then
-					writeSnap(w, slot, t)
-				end
-			end
-			table.clear(snaps)
-		end
+		Anim.writeRx(rx, w, t)
 		if w.pos > 0 then
 			local b, insts = Control.takeAll(w)
-			remote:FireClient(me, b, insts)
+			remote:FireClient(rx.player, b, insts)
 			counters.animRelayBytes += buffer.len(b)
 			local lh = LH.api
 			if lh then
@@ -599,8 +614,7 @@ function Anim.flush(t: number)
 			end
 		end
 	end
-	nev = 0
-	snapsPending = false
+	Anim.flushDone()
 end
 
 --------------------------------------------------------------------------------

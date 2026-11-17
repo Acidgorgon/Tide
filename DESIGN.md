@@ -240,3 +240,49 @@ signal, Stopped). Tests: owner play -> receivers play at the right render time (
 propagate, fade estimate within 0.03 s, snapshot for a late joiner and for an entity entering range, registry for
 unknown ids + caps, bots watched on the server, ownership checks, rate caps, allocation check of the watch step and
 apply step with no events (zero allocs).
+
+## Timeline state (v0.3)
+
+Goal: gameplay state that travels as Roblox attributes today ("until"/"at" windows, ball owner, slide
+and tackle statuses) lands on the same timeline as the body. Design from the research note
+(fsf-match/tide/research/timeline-state.md); Strike is the first user.
+
+- Schema per kind, declared once in shared code: `Tide.state(kind, { Field = { type, default, to, apply,
+  mirror, mirrorOn, mirrorNil, values, payload, history } })`. Types: bool, u8, u16, i16, f32, f64, time
+  (absolute server time; wire i16 0.5 ms relative to the change's stamp, f64 escape), ref (another
+  entity; u16 slot), enum (u8), event (pulse, optional payload), yaw (u16 flat direction), pos (3 x f32).
+  `to` = all | owner | others | server; `apply` = drawn | arrival. Fields sorted by name -> ids (max 127).
+  The server sends its schemas (32 SCHEMA) to clients, so clients decode exactly what the server encodes;
+  a differing client declaration is warned about (checksum). No declaration: nothing changes (v0.2 bytes
+  apart from the version byte, 4).
+- Server-authoritative: `Tide.set(target, field, value, stamp?)`, `Tide.fire(target, event, payload?,
+  stamp?)`. Stamp = now or given, clamped to [now - MaxBackdate, now], on the 0.5 ms grid; stamps need
+  not be ordered (an older one only enters history). Values stored as clients decode them. Same-value
+  sets skipped. Clients sending state tags are counted and dropped.
+- History: per entity per field a sorted ring (`Config.StateHistory` = 32, field `history`), evicted
+  values become the base; `Tide.stateAt(target, field, t)`, `Tide.changedAt(target, field, t0, t1)`.
+  Refs to an entity that goes are set to nil and read nil in history. Allocation-free steady state.
+- Wire: reliable TideR, merged with the frame's ANIM events into one message per receiver per frame.
+  30 STATE = f64 base, u16 groups x (u16 slot, i16 dt, u8 n, n x (u8 field [bit7 default], value)).
+  Groups (entity, stamp, audience) are encoded once per frame and memcpy'd per receiver (skips culled
+  receivers and `to`).
+- Snapshots (31 STATESNAP) when a receiver starts getting an entity (READY, back in cull range, owner
+  change for owner/others fields): the changes it missed (tracked by flush number per receiver and
+  audience class (all / owner / others), so no duplicates across cull and owner changes) after t0 = now -
+  `Config.StateReplay` one by one, plus each field's value at t0 when older missed changes exist. The
+  receiver applies them on its own clock, landing on the same timeline. An owner is never culled from
+  its own entity's state.
+- Client: per entity a queue in stamp order (64), applied in PreRender after Render and AnimPlay when
+  the entity's clock reaches the stamp: remote entities `now - delay` (same as body and animations),
+  `Tide.clock(model, fn(now))` for entities game code draws, `now - kind.buffer` for state-only ones
+  without a clock; own entities, `apply = "arrival"` and owner-only fields on arrival. Clock monotonic per
+  entity; changes older than the applied one are stale (events always fire). `Tide.get` (as drawn),
+  `Tide.peek` (newest received), `Tide.timeOf(model)` (compare "until" times against it),
+  `Tide.changed(model, field, fn)`, `Tide.stateChanged(fn)`. Never-throw receive (counted).
+- Mirror mode: `mirror = "AttrName"`: the client sets the attribute locally when a change applies (refs
+  as the model's Name, `mirrorNil` for nil, events as their time, `mirrorOn = "player"`), so existing
+  attribute reads keep working at the drawn time. The server must stop writing that attribute.
+- State-only kinds (`motion = false`): no sampling, relay, upload, lock, drawing or anchoring; never
+  culled; state and history only. For the ball until the ball channel exists.
+- Not done (proposal 3.8 and later): owner-local `Tide.predict`, a latest-value field mode on the
+  unreliable stream, a ball channel.

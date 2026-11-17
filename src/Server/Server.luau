@@ -20,6 +20,8 @@ local Ticker = require(script.Parent.Ticker)
 local Lock = require(script.Parent.Lock)
 local Motion = require(script.Parent.Motion)
 local Anim = require(script.Parent.Anim)
+local StateLog = require(script.Parent.StateLog)
+local StateSchema = require(Shared.StateSchema)
 local AnimRegistry = require(Shared.AnimRegistry)
 local Options = require(Shared.Options)
 local LH = require(Shared.Lighthouse)
@@ -29,6 +31,8 @@ local Server = {}
 Server.addedSignal = Signal.new()
 Server.removedSignal = Signal.new()
 Server.animatedSignal = Anim.animatedSignal
+Server.stateChangedSignal = StateLog.changedSignal
+Server.stateFieldSignals = StateLog.fieldSignals
 
 local remoteU: any = nil
 local remoteR: any = nil
@@ -132,7 +136,12 @@ local function writeHello(w: Control.Writer)
 		Control.u8(w, kind.id)
 		Control.str(w, kind.name)
 		Control.f32(w, kind.rate)
-		Control.u8(w, (if kind.full then 1 else 0) + (if anims and kind.animations == false then 2 else 0))
+		Control.u8(
+			w,
+			(if kind.full then 1 else 0)
+				+ (if anims and (kind.animations == false or kind.motion == false) then 2 else 0)
+				+ (if kind.motion == false then 4 else 0)
+		)
 		Control.f32(w, kind.buffer)
 		Control.f32(w, kind.extrapolate)
 		Control.f32(w, kind.keepAlive)
@@ -176,6 +185,7 @@ function Server.kindsChanged()
 		return
 	end
 	writeHello(bcast)
+	StateLog.writeSchemas(bcast)
 end
 
 local function onReady(player: any, rx: any)
@@ -185,6 +195,7 @@ local function onReady(player: any, rx: any)
 	local w = Control.writer(256)
 	writeHello(w)
 	Anim.helloIds(w)
+	StateLog.writeSchemas(w)
 	for k = 1, State.count do
 		writeAdd(w, State.active[k])
 	end
@@ -193,6 +204,7 @@ local function onReady(player: any, rx: any)
 	table.insert(State.rxList, rx)
 	Relay.onReady(rx)
 	Anim.onReady(rx)
+	StateLog.onReady(rx)
 end
 
 local function onResend(player: any, rx: any, b: buffer, pos: number): number
@@ -247,6 +259,11 @@ local function handleControl(player: any, payload: any)
 			pos = Anim.handleUp(player, rx, b, pos)
 		elseif tag == Control.REGISTER and Anim.active then
 			pos = Anim.handleRegister(player, rx, b, pos)
+		elseif tag == Control.STATE or tag == Control.STATESNAP or tag == Control.SCHEMA then
+			-- state is server-authoritative: clients never send it
+			State.counters.stateRejected += 1
+			State.suspicious(player, "stateFromClient")
+			return
 		else
 			State.counters.badPacket += 1
 			return
@@ -295,7 +312,7 @@ end
 watchRoot = function(slot: number)
 	unwatch(slot)
 	local root = State.root[slot]
-	if not Config.teleportOnWrite or root == nil or not State.owner[slot] then
+	if not Config.teleportOnWrite or root == nil or not State.owner[slot] or State.kind[slot].motion == false then
 		return
 	end
 	State.watch[slot] = root:GetPropertyChangedSignal("CFrame"):Connect(function()
@@ -353,7 +370,8 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	local _fl
 	x, y, z, yaw, _fl, qx, qy, qz, qw = Codec.quantize(x, y, z, yaw, if full then 2 else 0, qx, qy, qz, qw)
 	Ring.push(h, if owner then t - Config.MaxBackdate else t, x, y, z, yaw, 0, qx, qy, qz, qw)
-	State.relayed[slot] = 0
+	-- state-only kinds (motion = false) never relay a sample
+	State.relayed[slot] = if kind.motion == false then h.last else 0
 	State.sentT[slot] = t
 	State.heldT[slot] = 0
 	State.forceTele[slot] = false
@@ -368,7 +386,7 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	if owner ~= nil and kind.name == "Player" then
 		State.charSlot[owner] = slot
 	end
-	if owner ~= nil and Config.lockPlayers then
+	if owner ~= nil and Config.lockPlayers and kind.motion ~= false then
 		Lock.lock(slot)
 	end
 	watchRoot(slot)
@@ -382,6 +400,8 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	end)
 
 	writeAdd(bcast, slot)
+	StateLog.onAdd(slot)
+	StateLog.onAddRx(slot)
 	Relay.onAdd(slot)
 	Anim.onAdd(slot)
 	Signal.fire(Server.addedSignal, model, kind.name, owner)
@@ -412,6 +432,8 @@ function Server.remove(slot: number)
 	local model = State.model[slot]
 	local owner = State.owner[slot]
 	local kindName = State.kind[slot].name
+	State.bySlotModel[model] = nil
+	StateLog.onRemove(slot, model)
 	if owner and State.charSlot[owner] == slot then
 		State.charSlot[owner] = nil
 	end
@@ -467,7 +489,7 @@ local function sendTeleport(slot: number)
 end
 
 function Server.teleport(slot: number, cf: CFrame, velocity: Vector3?)
-	if State.index[slot] == nil then
+	if State.index[slot] == nil or State.kind[slot].motion == false then
 		return
 	end
 	local t = now()
@@ -562,7 +584,7 @@ function Server.setOwner(slot: number, player: any?)
 		if State.kind[slot].name == "Player" then
 			State.charSlot[player] = slot
 		end
-		if Config.lockPlayers then
+		if Config.lockPlayers and State.kind[slot].motion ~= false then
 			Lock.lock(slot)
 		end
 		watchRoot(slot)
@@ -571,6 +593,7 @@ function Server.setOwner(slot: number, player: any?)
 	Control.u16(bcast, slot)
 	Control.f64(bcast, if player then player.UserId else 0)
 	Anim.onOwner(slot, old)
+	StateLog.onOwner(slot, old)
 end
 
 --------------------------------------------------------------------------------
@@ -578,6 +601,9 @@ end
 --------------------------------------------------------------------------------
 
 local function poseCFrame(slot: number, t: number?): CFrame?
+	if State.kind[slot].motion == false then
+		return nil
+	end
 	local h = State.hist[slot]
 	local full = State.hist[slot].full
 	if t == nil then
@@ -621,7 +647,7 @@ end
 -- Velocity from history (studs/s); zero if unknown or idle.
 function Server.velocity(target: any): Vector3
 	local slot = Server.slotOf(target)
-	if slot == nil then
+	if slot == nil or State.kind[slot].motion == false then
 		return Vector3.new(0, 0, 0)
 	end
 	local vx, vy, vz = Motion.velocity(slot)
@@ -669,6 +695,70 @@ function Server.stop(target: any, animation: any, fade: number?)
 	if slot ~= nil then
 		Anim.stop(slot, anim, fade)
 	end
+end
+
+--------------------------------------------------------------------------------
+-- Timeline state
+--------------------------------------------------------------------------------
+
+-- Tide.state: declares a kind's fields (shared code; the server's declaration is sent to clients).
+function Server.state(kindName: string, fields: { [string]: any })
+	StateLog.checkDeclare(kindName)
+	StateSchema.define(kindName, fields)
+	StateLog.attach(kindName)
+	if State.started then
+		StateLog.writeSchemas(bcast)
+	end
+end
+
+local function stateSlot(target: any): number?
+	local slot = Server.slotOf(target)
+	if slot == nil then
+		State.counters.stateNoEntity += 1
+	end
+	return slot
+end
+
+function Server.set(target: any, field: string, value: any, stamp: number?)
+	local slot = stateSlot(target)
+	if slot ~= nil then
+		StateLog.set(slot, field, value, stamp)
+	end
+end
+
+function Server.fire(target: any, field: string, payload: any, stamp: number?)
+	local slot = stateSlot(target)
+	if slot ~= nil then
+		StateLog.fire(slot, field, payload, stamp)
+	end
+end
+
+function Server.get(target: any, field: string): (any, any)
+	local slot = Server.slotOf(target)
+	if slot == nil then
+		return nil, nil
+	end
+	return StateLog.get(slot, field)
+end
+
+function Server.stateAt(target: any, field: string, t: number): (any, any)
+	local slot = Server.slotOf(target)
+	if slot == nil then
+		return nil, nil
+	end
+	return StateLog.stateAt(slot, field, t)
+end
+
+function Server.changedAt(target: any, field: string, t0: number, t1: number): number?
+	local slot = Server.slotOf(target)
+	if slot == nil then
+		return nil
+	end
+	return StateLog.changedAt(slot, field, t0, t1)
+end
+
+function Server.timeOf(_target: any): number
+	return now()
 end
 
 function Server.handleOf(target: any): any
@@ -766,6 +856,59 @@ end
 -- Frame
 --------------------------------------------------------------------------------
 
+-- One reliable message per receiver per frame: animation events and timeline state together.
+local relOut = Control.writer(512)
+local exactR = {} :: { [number]: buffer } -- exact-size send buffers (the remote copies at the call)
+local NO_INSTS = table.freeze({})
+
+-- `remote` replaces the reliable remote (tests).
+function Server.flushReliable(t: number, remote: any?)
+	local anims = Anim.pending()
+	local states = StateLog.pending()
+	if not anims and not states then
+		return
+	end
+	if states then
+		StateLog.prepare(t)
+	end
+	local w = relOut
+	local counters = State.counters
+	for _, rx in State.rxList do
+		if anims then
+			Anim.writeRx(rx, w, t)
+		end
+		local mid = w.pos
+		if states then
+			StateLog.writeRx(rx, w, t)
+		end
+		local n = w.pos
+		if n > 0 then
+			local b = if n <= 2048 then exactR[n] else nil
+			if b == nil then
+				b = buffer.create(n)
+				if n <= 2048 then
+					exactR[n] = b
+				end
+			end
+			buffer.copy(b, 0, w.b, 0, n)
+			w.pos = 0
+			(remote or remoteR):FireClient(rx.player, b, NO_INSTS)
+			local lh = LH.api
+			if lh then
+				lh.net("Tide", "Anim", "out", n, rx.player)
+			end
+			counters.animRelayBytes += mid
+			counters.stateRelayBytes += n - mid
+		end
+	end
+	if anims then
+		Anim.flushDone()
+	end
+	if states then
+		StateLog.flushDone()
+	end
+end
+
 local lastT = 0
 local rateT = 0
 local rateIn = 0
@@ -806,7 +949,7 @@ local function onFrame(dt: number)
 	end
 	flushBroadcast()
 	Relay.step(t, step)
-	Anim.flush(t)
+	Server.flushReliable(t)
 	if lh then
 		LH.relay:finish()
 	end
@@ -881,9 +1024,13 @@ function Server.start(opts: { [string]: any }?): boolean
 	remoteR.Parent = parent
 	Relay.init(remoteU)
 	Anim.init(remoteR, bcast)
-	if Anim.active then
-		Relay.onEnter = Anim.onEnter
+	Relay.onEnter = function(rx: any, slot: number)
+		if Anim.active then
+			Anim.onEnter(rx, slot)
+		end
+		StateLog.onEnter(rx, slot)
 	end
+	Relay.onLeave = StateLog.onLeave
 
 	remoteU.OnServerEvent:Connect(onUpload)
 	remoteR.OnServerEvent:Connect(onControl)

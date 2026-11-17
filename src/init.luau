@@ -23,6 +23,13 @@
 --   Tide.stop(model, animation | name, fade?)
 --   Tide.playing(model, t?)                 -- { [name] = info } (server: at time t; client: own or as drawn)
 --   Tide.animated(fn(model, op, name, info)) -- server: accepted events; client: events applied to remote entities
+-- timeline state (v0.3; on for kinds with a schema)
+--   Tide.state("Ball", { Owner = { type = "ref", mirror = "Owner" }, ShotAt = "time", ... })  -- shared code
+--   server: Tide.set(model, field, value, stamp?)  Tide.fire(model, eventField, payload?, stamp?)
+--           Tide.get(model, field)  Tide.stateAt(model, field, t)  Tide.changedAt(model, field, t0, t1)
+--   client: Tide.get(model, field) (as drawn)  Tide.peek(model, field)  Tide.timeOf(model)
+--           Tide.clock(model, fn(now) -> serverTime)   (entities game code draws, e.g. the ball)
+--   both:   Tide.changed(model, field, fn(value, old, t))  Tide.stateChanged(fn(model, field, value, old, t))
 
 local RunService = game:GetService("RunService")
 
@@ -101,7 +108,74 @@ function Tide.animated(fn: (model: Instance, op: string, name: string, info: { [
 	return Signal.connect(Side.animatedSignal, fn)
 end
 
+-- Timeline state (v0.3). Declares the state fields of a kind, once, in shared code (server and
+-- client). fields = { [name] = { type = ..., to = ..., apply = ..., mirror = ..., ... } } or
+-- { [name] = "type" }; see Shared/StateSchema for every option.
+function Tide.state(kindName: string, fields: { [string]: any })
+	Side.state(kindName, fields)
+end
+
+-- Server: the current value. Client: the value as drawn (applied when this client's clock for
+-- the entity reached the change's stamp). Event fields: stamp of the latest fire, and its payload.
+function Tide.get(model: any, field: string): (any, any)
+	return Side.get(model, field)
+end
+
+-- The server time an entity is at: the server's now on the server; on a client the time its
+-- body (and state) is drawn at. Compare "until" times against this, not GetServerTimeNow().
+function Tide.timeOf(model: any): number
+	return Side.timeOf(model)
+end
+
+-- fn(value, old, t) when a field of this model changes (server: on set; client: when applied).
+-- Event fields: fn(payload, nil, t) on each fire.
+function Tide.changed(model: Instance, field: string, fn: (value: any, old: any, t: number) -> ())
+	assert(model ~= nil, "Tide.changed: model expected")
+	assert(type(field) == "string", "Tide.changed: field name expected")
+	local map = Side.stateFieldSignals
+	local byField = map[model]
+	if byField == nil then
+		byField = {}
+		map[model] = byField
+	end
+	local signal = byField[field]
+	if signal == nil then
+		signal = Signal.new()
+		byField[field] = signal
+	end
+	return Signal.connect(signal, fn)
+end
+
+-- fn(model, field, value, old, t) for every change (server: on set; client: when applied).
+function Tide.stateChanged(fn: (model: Instance, field: string, value: any, old: any, t: number) -> ())
+	return Signal.connect(Side.stateChangedSignal, fn)
+end
+
 if IS_SERVER then
+	-- Sets a field (server-authoritative), stamped now or at `stamp` (clamped to
+	-- [now - Config.MaxBackdate, now]). nil = the field's default.
+	function Tide.set(model: any, field: string, value: any, stamp: number?)
+		Side.set(model, field, value, stamp)
+	end
+
+	-- Fires an event field (with its payload, if the field declares one).
+	function Tide.fire(model: any, field: string, payload: any?, stamp: number?)
+		Side.fire(model, field, payload, stamp)
+	end
+
+	-- Value in effect at server time t, from the field's history (Config.StateHistory changes).
+	function Tide.stateAt(model: any, field: string, t: number): (any, any)
+		return Side.stateAt(model, field, t)
+	end
+
+	-- Stamp of the first change of a field in (t0, t1], or nil.
+	function Tide.changedAt(model: any, field: string, t0: number, t1: number): number?
+		return Side.changedAt(model, field, t0, t1)
+	end
+
+	-- Client only (no-op here, so shared code may call it).
+	function Tide.clock(_model: any, _fn: any) end
+
 	-- Registers a model. owner = nil: server-owned (sampled by the server);
 	-- owner = Player: that client samples and uploads it.
 	function Tide.add(model: Instance, kind: string?, owner: Player?)
@@ -150,6 +224,17 @@ else
 
 	function Tide.sampleInfo(model: Instance, into: { [string]: any }?): { [string]: any }?
 		return Side.sampleInfo(model, into)
+	end
+
+	-- Newest received value of a field (may be ahead of the drawing), and its stamp.
+	function Tide.peek(model: any, field: string): (any, number?)
+		return Side.peek(model, field)
+	end
+
+	-- Supplies the clock an entity's state applies at, for entities game code draws itself
+	-- (e.g. a ball drawn at its own lead): fn(now) -> server time. nil removes it.
+	function Tide.clock(model: any, fn: ((now: number) -> number)?)
+		Side.clock(model, fn)
 	end
 end
 

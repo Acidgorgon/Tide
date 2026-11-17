@@ -582,7 +582,34 @@ function Instance.GetAttribute(self, name: string)
 end
 
 function Instance.SetAttribute(self, name: string, value: any)
-	rawget(self, "_attributes")[name] = value
+	local attributes = rawget(self, "_attributes")
+	local old = attributes[name]
+	attributes[name] = value
+	if old ~= value then
+		local signals = rawget(self, "_attrSignals")
+		local signal = signals and signals[name]
+		if signal ~= nil then
+			signal:_fire()
+		end
+		local changed = rawget(self, "AttributeChanged")
+		if changed ~= nil then
+			changed:_fire(name)
+		end
+	end
+end
+
+function Instance.GetAttributeChangedSignal(self, name: string)
+	local signals = rawget(self, "_attrSignals")
+	if signals == nil then
+		signals = {}
+		rawset(self, "_attrSignals", signals)
+	end
+	local signal = signals[name]
+	if signal == nil then
+		signal = Signal.new()
+		signals[name] = signal
+	end
+	return signal
 end
 
 -- Fires (synchronously) on every script write of the property, like

@@ -170,7 +170,7 @@ function Upload.step(now: number)
 	end
 	for k = 1, State.count do
 		local slot = active[k]
-		if mine[slot] then
+		if mine[slot] and kinds[slot].motion ~= false then
 			local kind = kinds[slot]
 			local due = nextT[slot]
 			local interval = 1 / kind.rate

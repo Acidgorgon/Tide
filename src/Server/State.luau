@@ -91,6 +91,14 @@ State.counters = {
 	animRegister = 0, -- REGISTER requests refused (invalid string, per-player cap)
 	animIdsFull = 0, -- ids refused at Config.MaxAnimIds
 	animRelayBytes = 0, -- animation bytes sent to clients
+	-- timeline state (Tide.state)
+	stateSets = 0, -- changes recorded (sets and fires)
+	stateSame = 0, -- sets skipped: same value as the current one
+	stateClamped = 0, -- given stamps clamped to [now - MaxBackdate, now]
+	stateSnaps = 0, -- snapshots sent (late join, back in range, owner change)
+	stateRelayBytes = 0, -- state bytes sent to clients
+	stateRejected = 0, -- state messages from clients (dropped: the server is authoritative)
+	stateNoEntity = 0, -- Tide.set / Tide.fire on something that is not a Tide entity (ignored)
 }
 
 State.onSuspicious = nil :: ((player: any, reason: string) -> ())?

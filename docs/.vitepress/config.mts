@@ -33,6 +33,7 @@ export default defineConfig({
           { text: 'Bots and NPCs', link: '/guide/entities' },
           { text: 'Time and rewind', link: '/guide/time-and-rewind' },
           { text: 'Animations', link: '/guide/animations' },
+          { text: 'Timeline state', link: '/guide/state' },
           { text: 'Interest and bandwidth', link: '/guide/interest' },
           { text: 'Security', link: '/guide/security' },
           { text: 'Profiling with Lighthouse', link: '/guide/profiling' },

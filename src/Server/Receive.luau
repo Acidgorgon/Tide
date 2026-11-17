@@ -147,8 +147,8 @@ function Receive.handle(player: any, rx: any, payload: any, now: number, frame: 
 		local _, x, y, z, yaw, flags, qx, qy, qz, qw = read(b, pos + 10)
 		pos += 10 + size
 
-		if owner[slot] ~= player or index[slot] == nil then
-			counters.owner += 1
+		if owner[slot] ~= player or index[slot] == nil or kinds[slot].motion == false then
+			counters.owner += 1 -- not theirs, or a state-only entity (no samples)
 			continue
 		end
 		-- NaN / inf (abs positions are f32 and may carry either)
