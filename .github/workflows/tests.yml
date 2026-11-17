@@ -1,0 +1,50 @@
+name: Tests
+
+# Builds the Luau 0.700 test host (bench/host, CMake) and runs tests/ interpreted and native.
+# The Luau sources are not in the repository: bench/fetch_luau.sh downloads the `luau0-src`
+# crate 0.16.0+luau700 (the Luau 0.700 release sources, MIT) from crates.io.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "bench/host/**"
+      - "bench/fetch_luau.sh"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "bench/host/**"
+      - "bench/fetch_luau.sh"
+      - ".github/workflows/tests.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Luau tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Luau sources and host
+        uses: actions/cache@v4
+        with:
+          path: |
+            bench/third_party/luau-0.700-src
+            bench/host/build
+          key: luau-host-0.700-${{ runner.os }}-${{ hashFiles('bench/host/CMakeLists.txt', 'bench/host/main.cpp') }}
+
+      - name: Fetch Luau 0.700 sources
+        run: sh bench/fetch_luau.sh
+
+      - name: Run tests
+        env:
+          LUAU_HOST_SRC: ${{ github.workspace }}/bench/host
+          TIDE_HOST_BUILD: ${{ github.workspace }}/bench/host/build
+        run: bash tests/run.sh

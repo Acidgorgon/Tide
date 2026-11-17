@@ -1,0 +1,108 @@
+--!strict
+--!native
+--!optimize 2
+-- Server-owned entities: sampled at kind.rate with an accumulator (no drift).
+-- Idle: the first unchanged sample is still pushed (a "stop" sample: receivers
+-- see zero velocity and do not extrapolate), later unchanged ticks are skipped
+-- with a keep-alive every kind.keepAlive. When the entity moves again, the last
+-- unchanged tick is pushed first (rest marker) so receivers do not smear the
+-- start of the motion across the idle gap. Client uploads follow the same rules.
+
+local Shared = script.Parent.Parent.Shared
+local Kinds = require(Shared.Kinds)
+local Codec = require(Shared.Codec)
+local Ring = require(Shared.Ring)
+local Rig = require(Shared.Rig)
+local State = require(script.Parent.State)
+
+local Ticker = {}
+
+local active = State.active
+local owner = State.owner
+local hist = State.hist
+local kinds = State.kind
+local models = State.model
+local roots = State.root
+local sentT = State.sentT
+local heldT = State.heldT
+local forceTele = State.forceTele
+local still = State.still
+
+local quantize = Codec.quantize
+local read = Rig.read
+local push = Ring.push
+
+-- Samples one server-owned entity now. Exposed for teleports and tests.
+function Ticker.sample(slot: number, now: number)
+	local kind = kinds[slot]
+	local h = hist[slot]
+	local full = h.full -- the ring's own layout (a kind's rotation may change later)
+	local model = models[slot]
+	local root = roots[slot]
+	if root ~= nil and root.Parent == nil then
+		root = nil
+	end
+	local x, y, z, yaw, qx, qy, qz, qw = read(model, root, full)
+	local _fl
+	x, y, z, yaw, _fl, qx, qy, qz, qw = quantize(x, y, z, yaw, if full then 2 else 0, qx, qy, qz, qw)
+	local p = h.last % h.cap + 1
+	local lastT = h.t[p]
+	if now <= lastT then
+		return
+	end
+	local tele = forceTele[slot] == true
+	local same = not tele
+		and x == h.x[p]
+		and y == h.y[p]
+		and z == h.z[p]
+		and yaw == h.yaw[p]
+		and (not full or (qx == h.qx[p] and qy == h.qy[p] and qz == h.qz[p] and qw == h.qw[p]))
+	if same then
+		if not still[slot] then
+			still[slot] = true
+			push(h, now, x, y, z, yaw, 0, qx, qy, qz, qw)
+			sentT[slot] = now
+			heldT[slot] = 0
+		elseif now - sentT[slot] >= kind.keepAlive then
+			push(h, now, x, y, z, yaw, 0, qx, qy, qz, qw)
+			sentT[slot] = now
+			heldT[slot] = 0
+		else
+			heldT[slot] = now
+		end
+		return
+	end
+	local held = heldT[slot]
+	if held > lastT and not tele then
+		-- rest marker: still at the old pose at the last unchanged tick
+		push(h, held, h.x[p], h.y[p], h.z[p], h.yaw[p], 0, if full then h.qx[p] else 0, if full then h.qy[p] else 0, if full then h.qz[p] else 0, if full then h.qw[p] else 1)
+	end
+	heldT[slot] = 0
+	still[slot] = false
+	forceTele[slot] = false
+	push(h, now, x, y, z, yaw, if tele then 1 else 0, qx, qy, qz, qw)
+	sentT[slot] = now
+end
+
+function Ticker.step(now: number, dt: number)
+	for _, kind in Kinds.list do
+		local interval = 1 / kind.rate
+		local acc = kind.acc + dt
+		if acc >= interval then
+			-- one sample per frame at most; drop whole missed ticks, keep the phase
+			acc -= (acc // interval) * interval
+			kind.tick = true
+		else
+			kind.tick = false
+		end
+		kind.acc = acc
+	end
+	for k = 1, State.count do
+		local slot = active[k]
+		if owner[slot] == false and kinds[slot].tick then
+			Ticker.sample(slot, now)
+		end
+	end
+end
+
+return Ticker

@@ -1,0 +1,117 @@
+--!strict
+-- Reliable control channel (RemoteEvent "TideR") message writer.
+-- Messages are concatenated in one buffer per send; instances travel as a dense
+-- array in the second remote argument and are referenced by 1-based index.
+--
+-- server -> client
+--   10 ADD      u16 slot, u8 kind, u16 instance index, f64 owner userId (0 = server)
+--   11 REMOVE   u16 slot
+--   12 OWNER    u16 slot, f64 owner userId
+--   13 TELEPORT u16 slot, f32 x, y, z, qx, qy, qz, qw, u8 has velocity, [f32 vx, vy, vz]
+--               (to the owner: move there, flag uploads for Config.TeleportAckTime)
+--   14 HELLO    u8 version, f64 origin x, y, z, u8 lock, u8 upload redundancy, u8 kind count,
+--               per kind: u8 id, u8 name length, name, f32 rate, u8 flags (bit0 full), f32 buffer,
+--               f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise, f32 maxFall
+-- client -> server
+--   15 READY
+--   16 RESEND   u8 count, count x u16 slot   (models that did not arrive, e.g. streaming)
+
+local Control = {}
+
+Control.ADD = 10
+Control.REMOVE = 11
+Control.OWNER = 12
+Control.TELEPORT = 13
+Control.HELLO = 14
+Control.READY = 15
+Control.RESEND = 16
+Control.VERSION = 2 -- 2: TELEPORT velocity, HELLO keepAlive
+
+export type Writer = {
+	b: buffer,
+	pos: number,
+	insts: { any },
+}
+
+function Control.writer(size: number?): Writer
+	return { b = buffer.create(size or 256), pos = 0, insts = {} }
+end
+
+local function ensure(w: Writer, n: number)
+	local need = w.pos + n
+	local len = buffer.len(w.b)
+	if need > len then
+		while len < need do
+			len *= 2
+		end
+		local nb = buffer.create(len)
+		buffer.copy(nb, 0, w.b, 0, w.pos)
+		w.b = nb
+	end
+end
+
+function Control.u8(w: Writer, v: number)
+	ensure(w, 1)
+	buffer.writeu8(w.b, w.pos, v)
+	w.pos += 1
+end
+
+function Control.u16(w: Writer, v: number)
+	ensure(w, 2)
+	buffer.writeu16(w.b, w.pos, v)
+	w.pos += 2
+end
+
+function Control.f32(w: Writer, v: number)
+	ensure(w, 4)
+	buffer.writef32(w.b, w.pos, v)
+	w.pos += 4
+end
+
+function Control.f64(w: Writer, v: number)
+	ensure(w, 8)
+	buffer.writef64(w.b, w.pos, v)
+	w.pos += 8
+end
+
+function Control.str(w: Writer, s: string)
+	local n = math.min(#s, 255)
+	ensure(w, n + 1)
+	buffer.writeu8(w.b, w.pos, n)
+	buffer.writestring(w.b, w.pos + 1, s, n)
+	w.pos += n + 1
+end
+
+-- Adds an instance to the argument array; returns its index (0 for nil).
+function Control.inst(w: Writer, inst: any): number
+	if inst == nil then
+		return 0
+	end
+	local insts = w.insts
+	local n = #insts + 1
+	insts[n] = inst
+	return n
+end
+
+-- Copies the written bytes into a buffer of exact size.
+function Control.take(w: Writer): buffer
+	local out = buffer.create(w.pos)
+	buffer.copy(out, 0, w.b, 0, w.pos)
+	return out
+end
+
+-- Hands out the instance array (a fresh one replaces it) and empties the writer.
+function Control.takeAll(w: Writer): (buffer, { any })
+	local b = Control.take(w)
+	local insts = w.insts
+	w.insts = {}
+	w.pos = 0
+	return b, insts
+end
+
+function Control.reset(w: Writer)
+	w.pos = 0
+	w.insts = {}
+end
+
+return Control
