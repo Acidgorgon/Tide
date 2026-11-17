@@ -893,6 +893,10 @@ function Server.flushReliable(t: number, remote: any?)
 			buffer.copy(b, 0, w.b, 0, n)
 			w.pos = 0
 			(remote or remoteR):FireClient(rx.player, b, NO_INSTS)
+			local lh = LH.api
+			if lh then
+				lh.net("Tide", "Anim", "out", n, rx.player)
+			end
 			counters.animRelayBytes += mid
 			counters.stateRelayBytes += n - mid
 		end
@@ -945,7 +949,7 @@ local function onFrame(dt: number)
 	end
 	flushBroadcast()
 	Relay.step(t, step)
-	Anim.flush(t)
+	Server.flushReliable(t)
 	if lh then
 		LH.relay:finish()
 	end

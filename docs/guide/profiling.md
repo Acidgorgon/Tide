@@ -22,7 +22,7 @@ so the overlay's top players by bytes include Tide's traffic.
 | `Relay` | server out, client in | sample packets (`TideU`), one per receiver per frame |
 | `Upload` | client out, server in | a client's samples for the entities it owns (`TideU`) |
 | `Control` | both ways | adds, removes, owners, teleports, hello and resends (`TideR`) |
-| `Anim` | out | animation tables, id replies and play events (v0.2). Incoming animation messages arrive on `TideR` and count as `Control` |
+| `Anim` | out | animation tables, id replies, play events (v0.2) and timeline state (v0.3), sent together in one reliable message per receiver per frame. Incoming animation messages arrive on `TideR` and count as `Control` |
 
 ## Probes
 

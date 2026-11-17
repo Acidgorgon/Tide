@@ -533,6 +533,7 @@ local function onPreRender(dt: number)
 	end
 	Render.step(t, step)
 	AnimPlay.step(t, step)
+	StateApply.step(t)
 	if lh then
 		LH.render:finish()
 	end
