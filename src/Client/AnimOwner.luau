@@ -14,6 +14,7 @@ local Players = game:GetService("Players")
 
 local Shared = script.Parent.Parent.Shared
 local Control = require(Shared.Control)
+local LH = require(Shared.Lighthouse)
 local AnimCodec = require(Shared.AnimCodec)
 local AnimRegistry = require(Shared.AnimRegistry)
 local AnimWatch = require(Shared.AnimWatch)
@@ -57,7 +58,12 @@ local function flush()
 	if up.pos == 0 then
 		return
 	end
-	remote:FireServer(Control.take(up))
+	local b = Control.take(up)
+	remote:FireServer(b)
+	local lh = LH.api
+	if lh then
+		lh.net("Tide", "Anim", "out", buffer.len(b))
+	end
 	up.pos = 0
 	countPos = -1
 	batch = 0

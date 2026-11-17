@@ -17,6 +17,7 @@ local Config = require(Shared.Config)
 local Codec = require(Shared.Codec)
 local Rig = require(Shared.Rig)
 local State = require(script.Parent.State)
+local LH = require(Shared.Lighthouse)
 
 local Upload = {}
 
@@ -74,6 +75,10 @@ local function send()
 	end
 	bcopy(b, 0, out, 0, pos)
 	remote:FireServer(b)
+	local lh = LH.api
+	if lh then
+		lh.net("Tide", "Upload", "out", pos)
+	end
 	counters.uploads += 1
 	counters.uploadBytes += pos
 	pos = 2
