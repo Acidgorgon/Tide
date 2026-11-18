@@ -68,7 +68,7 @@ See [Players: the lock](/guide/players#the-lock).
 | `CorrectionTime` | `0.1` | Seconds to blend away a correction. |
 | `SnapDistance` | `16` | Corrections larger than this (studs) snap instead of blending. |
 | `ClientAnchor` | `true` | Anchor the root of remotely-driven entities on the client (moved with `BulkMoveTo`). |
-| `ModelRetry` | `1.0` | Seconds between asks for models that haven't arrived (StreamingEnabled). |
+| `ModelRetry` | `1.0` | Seconds between asks for models that haven't arrived (StreamingEnabled). An ask names up to 64; with more missing, each ask takes the next 64. |
 | `rebindStreamed` | `false` | *Server, sent.* A model whose `Parent` became `nil` (streamed out) is dropped (`removed` fires) and asked for again; the re-streamed model, a new instance, is bound to the same entity and keeps its stream. A model the game parents back itself is bound again. Off (v0.3): Tide keeps driving the detached instance and never binds the new one. |
 | `TeleportAckTime` | `0.3` | Seconds after a server teleport during which the owner flags its uploads (and never skips idle ones). |
 | `startTimeout` | `30` | Seconds `Tide.start()` waits for the server's remotes before warning and returning `false`. |

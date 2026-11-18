@@ -33,7 +33,8 @@
 --               after its ADD; the global origin = back to Config.origin)
 -- client -> server
 --   15 READY
---   16 RESEND   u8 count, count x u16 slot   (models that did not arrive, e.g. streaming)
+--   16 RESEND   u8 count, count x u16 slot   (models that did not arrive, e.g. streaming; at most 64,
+--               with more missing each RESEND takes the next 64, v0.4.1)
 --   20 ANIM     f64 baseTime, u8 count, count x event
 --   22 REGISTER u8 length, AnimationId string (length 0: send me every id)
 --   (30-32 are server -> client only: a client sending them is counted (stateRejected) and dropped)

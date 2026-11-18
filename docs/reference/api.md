@@ -266,6 +266,7 @@ A copy of the counters.
 |---|---|
 | server | `packets`, `samples`, `badPacket`, `owner`, `stamp`, `nan`, `speed`, `rate`, `errors`, `relayBytes`, `relayPackets`, `budgetDropped`, `spacing` (uploads closer than half an interval), `teleportWait` (owner uploads dropped while a teleport is unacknowledged), `teleportIgnored`, `teleportFlagged` (server-owned samples flagged by `teleportDistance` or `markTeleport`), `inBytes` (all bytes received from clients), `inBytesPerSecond`, `relayBytesPerSecond` (both over the last second) |
 | server, links | `linkUnknown` (intents for keys not linked: dropped), `linkBad` (intents that failed: unknown player, malformed, or never written) |
+| server, audiences | `audienceAdds` (ADDs sent again to players coming back into an entity's audience) |
 | server, animations | `animEvents` (accepted), `animBad` (malformed), `animRate`, `animOwner`, `animStamp` (older than the entity's previous event), `animUnknown` (unknown id or priority), `animDropped` (kind opted out), `animRegister` (refused id requests), `animIdsFull`, `animRelayBytes` |
 | server, state | `stateSets` (changes recorded), `stateSame` (sets of the current value, skipped), `stateClamped` (stamps clamped), `stateSnaps`, `stateRelayBytes`, `stateRejected` (state messages from clients), `stateNoEntity` (sets on non-entities, ignored) |
 | client | `packets`, `records`, `badPacket`, `unknownSlot`, `late`, `uploads`, `uploadBytes`, `uploadSkipped` (idle samples not uploaded), `applyErrors`, `modelsLost` (models dropped when streamed out, `rebindStreamed`), `modelsRebound` (re-streamed instances bound again) |
@@ -443,8 +444,9 @@ handle.model -- the registered model
 - `setAudience`: who receives the entity. `nil` (the default): every player. A list (or set) of
   players: only them. A function: asked for each player every `Config.InterestEvery` (0.1 s); an error
   counts in `errors` and means no. Players outside it get nothing of the entity (samples, animations,
-  state), as if culled; coming back in, they get a state snapshot like any cull exit. An owner outside
-  the audience still uploads. See [Interest](/guide/interest#audiences).
+  state), as if culled; coming back in, they get the entity's ADD again (so a model that streamed in
+  meanwhile is bound at once) and a state snapshot like any cull exit. An owner outside the audience
+  still uploads. See [Interest](/guide/interest#audiences).
 - `setOrigin`: the entity's own quantization origin (`nil`: `Config.origin`), snapped to
   `Config.origin`'s 1/64 grid. Packed positions cover ±1024 studs around it, so entities far from
   `Config.origin` (another arena, a far venue) keep the 10-byte record. Set it in the same frame as

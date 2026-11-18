@@ -117,6 +117,8 @@ State.counters = {
 	-- links (v0.4, handle:link)
 	linkUnknown = 0, -- intents for keys not linked (or removed entities): dropped
 	linkBad = 0, -- intents that failed (malformed, unknown op or player): dropped
+	-- audiences (v0.4.1)
+	audienceAdds = 0, -- ADDs sent again to receivers that came back into an entity's audience
 }
 
 State.onSuspicious = nil :: ((player: any, reason: string) -> ())?

@@ -87,6 +87,8 @@ venue:at(key, t) / venue:latest(key) / venue:setOwner(key, userId?) / venue:tele
 ```
 
 v0.4 additions are opt-in: a game that doesn't call them behaves and sends the same bytes as v0.3.
+v0.4.1 fixes models that never bound for a player coming into an entity's audience, or with more than
+64 models missing (StreamingEnabled).
 
 Full reference: [API](https://acidgorgon.github.io/Tide/reference/api),
 [Config](https://acidgorgon.github.io/Tide/reference/config),

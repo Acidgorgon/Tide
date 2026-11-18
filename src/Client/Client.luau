@@ -264,6 +264,9 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 		if same and State.model[slot] == model then
 			return -- repeated ADD (answer to an earlier resend)
 		end
+		if same and model == nil then
+			return -- repeated ADD without the model (not streamed in here): keep what it has
+		end
 		local old = State.model[slot]
 		if same and old ~= nil and model ~= nil and State.rebindStreamed and old.Parent == nil then
 			dropModel(slot) -- a re-streamed model (new instance) replaces one that streamed out
@@ -620,35 +623,49 @@ local function checkRoots(dt: number)
 	end
 end
 
--- Ask again for models that arrived as nil (not streamed in yet).
+-- Ask again for models that arrived as nil (not streamed in yet), at most MAX_RESEND per ask.
+-- With more missing than that, each ask takes the next window of them (wrapping around), so
+-- entities the server does not answer for this client (outside their audience, or still not
+-- streamed in) cannot keep the others from ever being asked.
+local MAX_RESEND = 64
+local retrySkip = 0 -- missing models the next window starts after
+
 local function retryModels(dt: number)
 	retryAcc += dt
 	if retryAcc < Config.ModelRetry then
 		return
 	end
 	retryAcc = 0
-	local w: Control.Writer? = nil
-	local count = 0
+	local missing = 0
 	for k = 1, State.count do
-		local slot = State.active[k]
-		if State.model[slot] == nil and count < 64 then
-			if w == nil then
-				w = Control.writer(140)
-			end
-			count += 1
+		if State.model[State.active[k]] == nil then
+			missing += 1
 		end
 	end
-	if w == nil then
+	if missing == 0 then
+		retrySkip = 0
 		return
 	end
+	local count = missing
+	local skip = 0
+	if missing > MAX_RESEND then
+		count = MAX_RESEND
+		skip = retrySkip % missing
+		retrySkip = skip + count
+	else
+		retrySkip = 0 -- all of them, in list order (as v0.4.0)
+	end
+	local w = Control.writer(2 + MAX_RESEND * 2)
 	Control.u8(w, Control.RESEND)
 	Control.u8(w, count)
-	local written = 0
+	local i = 0
 	for k = 1, State.count do
 		local slot = State.active[k]
-		if State.model[slot] == nil and written < count then
-			Control.u16(w, slot)
-			written += 1
+		if State.model[slot] == nil then
+			if (i - skip) % missing < count then
+				Control.u16(w, slot)
+			end
+			i += 1
 		end
 	end
 	local b = Control.take(w)

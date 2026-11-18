@@ -104,7 +104,10 @@ last accepted sample covers the distance at `maxSpeed`.
 ## Streaming
 
 With StreamingEnabled, a model may not have reached a client when its entity arrives; the client asks
-for it again every `Config.ModelRetry` (1 s) until it does. When Roblox streams a model **out**, the
+for it again every `Config.ModelRetry` (1 s) until it does. One ask names up to 64 entities; with more
+missing, each ask takes the next 64 (wrapping around), so every missing model is asked for at least
+every `ceil(missing / 64)` asks, even when the server won't answer for some of them (entities whose
+[audience](/guide/interest#audiences) leaves the player out). When Roblox streams a model **out**, the
 client's instance leaves the DataModel and a new instance arrives when it streams back in. By default
 (v0.3) Tide keeps driving the old instance. With `Config.rebindStreamed = true` (a server setting, sent
 to clients) a model whose `Parent` became `nil` is dropped (`Tide.removed` fires), asked for again, and

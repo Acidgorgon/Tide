@@ -318,6 +318,47 @@ local function onResend(player: any, rx: any, b: buffer, pos: number): number
 	return pos + count * 2
 end
 
+-- Receivers that came back into an entity's audience: each gets the entity's ADD again, once,
+-- after the frame's broadcast (it may have asked for the model while outside, unanswered).
+local rejoined = {} :: { any }
+
+local function onAudienceEnter(rx: any, slot: number)
+	local pending = rx.rejoin
+	if pending[slot] then
+		return
+	end
+	if next(pending) == nil then
+		table.insert(rejoined, rx)
+	end
+	pending[slot] = true
+end
+
+local function flushRejoined()
+	if #rejoined == 0 then
+		return
+	end
+	for _, rx in rejoined do
+		local pending = rx.rejoin
+		if State.rx[rx.player] == rx then
+			local w: Control.Writer? = nil
+			for slot in pending do
+				if State.index[slot] ~= nil and not rx.outside[slot] then
+					if w == nil then
+						w = Control.writer(64)
+					end
+					writeAdd(w :: Control.Writer, slot)
+					State.counters.audienceAdds += 1
+				end
+			end
+			if w ~= nil then
+				sendTo(rx.player, w)
+			end
+		end
+		table.clear(pending)
+	end
+	table.clear(rejoined)
+end
+
 local function handleControl(player: any, payload: any)
 	local rx = State.rx[player]
 	if rx == nil or typeof(payload) ~= "buffer" then
@@ -1075,6 +1116,7 @@ local function onPlayerAdded(player: any)
 		tier = {},
 		outside = {}, -- slots culled because the receiver is outside their audience
 		audCache = {}, -- audience function -> result, per recompute
+		rejoin = {}, -- slots whose audience it came back into this frame (their ADD goes again)
 		focus = nil,
 		defer = {},
 		tokens = 0,
@@ -1234,6 +1276,7 @@ local function onFrame(dt: number)
 	end
 	flushBroadcast()
 	Relay.step(t, step)
+	flushRejoined()
 	Server.flushReliable(t)
 	if lh then
 		LH.relay:finish()
@@ -1317,6 +1360,7 @@ function Server.start(opts: { [string]: any }?): boolean
 		StateLog.onEnter(rx, slot)
 	end
 	Relay.onLeave = StateLog.onLeave
+	Relay.onAudienceEnter = onAudienceEnter
 
 	remoteU.OnServerEvent:Connect(onUpload)
 	remoteR.OnServerEvent:Connect(onControl)
