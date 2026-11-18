@@ -21,6 +21,7 @@ local Lock = require(script.Parent.Lock)
 local Motion = require(script.Parent.Motion)
 local Anim = require(script.Parent.Anim)
 local StateLog = require(script.Parent.StateLog)
+local Mirror = require(script.Parent.Mirror)
 local StateSchema = require(Shared.StateSchema)
 local AnimRegistry = require(Shared.AnimRegistry)
 local Options = require(Shared.Options)
@@ -124,6 +125,21 @@ end
 
 function Handle.alive(self: any): boolean
 	return liveSlot(self) ~= nil
+end
+
+-- Mirrors this entity's history into the link `name` under `key` (a string or number of
+-- yours) for code in other VMs (Shared/Link: rewind, owner/teleport intents). nil name: unlink.
+-- One entity per key; linking another entity under a taken key unlinks the first.
+function Handle.link(self: any, name: string?, key: any)
+	local slot = liveSlot(self)
+	if slot == nil then
+		return
+	end
+	if name == nil then
+		Mirror.unlink(slot)
+	else
+		Mirror.link(slot, name, key)
+	end
 end
 
 -- Who receives this entity: nil = every player (the default), a list (or set) of Players,
@@ -487,6 +503,7 @@ function Server.remove(slot: number)
 	end
 	Lock.unlock(slot)
 	unwatch(slot)
+	Mirror.unlink(slot)
 	Anim.onRemove(slot)
 	State.endTeleport(slot)
 	local conn = State.conn[slot]
@@ -670,6 +687,37 @@ function Server.markTeleport(slot: number, target: any)
 	State.markUntil[slot] = t + MARK_WINDOW
 	-- it may already be there (moved earlier this frame)
 	Ticker.sample(slot, math.max(t, Ring.newestT(State.hist[slot]) + 0.0005))
+end
+
+-- Intents queued by other VMs on a link (Shared/Link), applied at the start of a frame.
+Mirror.apply = function(op: string, slot: number, intent: any)
+	if op == "owner" then
+		local user = intent.user
+		local player = nil
+		if type(user) == "number" and user ~= 0 then
+			player = Players:GetPlayerByUserId(user)
+			if player == nil then
+				error("no such player") -- counted as linkBad
+			end
+		end
+		Server.setOwner(slot, player)
+	elseif op == "teleport" then
+		local x, y, z = intent.x, intent.y, intent.z
+		local cf = CFrame.new(x, y, z, intent.qx, intent.qy, intent.qz, intent.qw)
+		local velocity = nil
+		if intent.vx ~= nil then
+			velocity = Vector3.new(intent.vx, intent.vy, intent.vz)
+		end
+		Server.teleport(slot, cf, velocity)
+	elseif op == "mark" then
+		local target = nil
+		if intent.x ~= nil then
+			target = Vector3.new(intent.x, intent.y, intent.z)
+		end
+		Server.markTeleport(slot, target)
+	else
+		error("unknown op")
+	end
 end
 
 -- Resends unacknowledged teleports every TeleportRetry; after TeleportTries
@@ -1175,6 +1223,7 @@ local function onFrame(dt: number)
 	if lh then
 		LH.sample:begin()
 	end
+	Mirror.read()
 	Ticker.step(t, step)
 	Anim.step(t, step)
 	retryTeleports(t)
@@ -1189,6 +1238,7 @@ local function onFrame(dt: number)
 	if lh then
 		LH.relay:finish()
 	end
+	Mirror.write()
 	countRates(t)
 end
 

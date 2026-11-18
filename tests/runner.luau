@@ -76,6 +76,20 @@ function T.clientTide(world, index: number)
 	return client:require(module)
 end
 
+-- Another server VM (an Actor's): a fresh env sharing the world's SharedTableRegistry, with
+-- its own copy of Tide mounted. Returns a require of a module path, e.g. vm("Shared", "Link").
+function T.actorVM(world)
+	local env = world:_newEnv(true, nil)
+	local root = env:mountTree(T.SRC, env.ReplicatedStorage, "Tide")
+	return function(...)
+		local inst = root
+		for _, name in { ... } do
+			inst = inst:FindFirstChild(name) or error("no module " .. name)
+		end
+		return env:require(inst)
+	end
+end
+
 -- Requires a module of the mounted tree in the server env, e.g. T.module(world, "Shared", "Codec").
 function T.module(world, ...)
 	local inst = world.tideModule
