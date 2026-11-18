@@ -64,6 +64,28 @@ return function(T)
 		T.check(s.ct.sampleInfo(new).count > count, "same stream: samples kept counting (no reset)")
 	end)
 
+	T.test("an entity removed while its model is streamed out fires removed once, never with a nil model", function()
+		-- FM 2-player Studio test 2026-11-18: removeEntity fired removed(nil, kind) for slots whose model had already
+		-- been dropped, so a listener doing bodies[model] = nil threw "table index is nil".
+		local s = setup(true)
+		s.removed = {}
+		local nils = 0
+		s.ct.removed(function(model)
+			if model == nil then
+				nils += 1
+			end
+		end)
+		s.step(1)
+		local old = s.streamOut()
+		s.step(0.5)
+		T.eq(#s.removed, 1, "removed fired at stream-out")
+		T.eq(s.removed[1], old)
+		s.handle:remove()
+		s.step(1)
+		T.eq(nils, 0, "no removed(nil)")
+		T.eq(#s.removed, 1, "not fired again for the entity that had no model")
+	end)
+
 	T.test("control (v0.3 default): the old reference is kept and the new instance never drawn", function()
 		local s = setup(false)
 		s.step(1)
