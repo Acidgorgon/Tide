@@ -7,12 +7,15 @@
 --   local bot = Tide.add(model, "Bot")     -- server-owned; returns a handle
 --   bot:teleport(cf, velocity?)  bot:remove()  bot:setOwner(player?)
 --   bot:setAudience(fn(player) -> boolean | { Player } | nil)   -- who receives it (v0.4)
+--   bot:markTeleport(target?)  bot:setOrigin(origin?)  bot:link(name?, key)          (v0.4)
 --   Tide.focus(player, part | model | Vector3 | nil)          -- interest without a character (v0.4)
 --   Tide.at(model, t)                      -- rewind: CFrame at server time t (what clients drew)
 --   Tide.latest(model)                     -- newest accepted sample
 --   Tide.velocity(model)                   -- from history
 --   Tide.kind("Ball", { rate = 60, rotation = "full" })
 --   Tide.onSuspicious(function(player, reason) end)
+-- other VMs of the server (Actors), v0.4: require(ReplicatedStorage.Tide.Shared.Link).open(name)
+--   venue:at(key, t)  venue:latest(key)  venue:setOwner(key, userId?)  venue:teleport(key, cf)
 -- client
 --   Tide.start()                           -- false if the server's remotes never appear (Config.startTimeout)
 --   Tide.drawn(model)  Tide.delay(model)  Tide.velocity(model)  Tide.latest(model)

@@ -69,10 +69,20 @@ See [Players: the lock](/guide/players#the-lock).
 | `SnapDistance` | `16` | Corrections larger than this (studs) snap instead of blending. |
 | `ClientAnchor` | `true` | Anchor the root of remotely-driven entities on the client (moved with `BulkMoveTo`). |
 | `ModelRetry` | `1.0` | Seconds between asks for models that haven't arrived (StreamingEnabled). |
+| `rebindStreamed` | `false` | *Server, sent.* A model whose `Parent` became `nil` (streamed out) is dropped (`removed` fires) and asked for again; the re-streamed model, a new instance, is bound to the same entity and keeps its stream. A model the game parents back itself is bound again. Off (v0.3): Tide keeps driving the detached instance and never binds the new one. |
 | `TeleportAckTime` | `0.3` | Seconds after a server teleport during which the owner flags its uploads (and never skips idle ones). |
 | `startTimeout` | `30` | Seconds `Tide.start()` waits for the server's remotes before warning and returning `false`. |
 
 `NeedGapMax` and `SnapGap` are also read by the server's `Tide.at` interpolation.
+
+## Owner changes
+
+Both are server fields, sent to clients. Defaults behave as v0.3.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `ownerEase` | `false` | An owner change keeps each receiver's render clock for the entity: the new source starts at the old delay and eases to its own (the clock runs at 0.75x..1.1x of real time meanwhile) instead of jumping to it. The old owner blends from its own pose instead of jumping back. Measured (20 studs/s, owner flipping every 0.75 s, a third client watching): worst one-frame step 1.00 / 2.32 / 4.72 studs at 30 / 60 / 100 ms one-way without it, 0.19 / 0.24 / 0.33 with it. |
+| `ownerStart` | `"drawn"` | Where the new owner's copy starts. `"drawn"`: where Tide drew it (v0.3; the copy is a render delay behind, so the server's history steps back). `"latest"`: the newest sample it received, carried to now. `"server"`: the server's pose at the change (the live model for a server-owned entity, else its newest sample), sent with the OWNER message, carried to now. Tide moves the copy with `PivotTo`; the owner's physics carries on from there. |
 
 ## Animations
 

@@ -65,17 +65,28 @@ Tide.start(opts?)                 -- server: { players = true, ...Config fields 
 Tide.kind(name, opts)             -- rate, rotation, near, far, cull, farEvery, buffer, extrapolate, ...
 Tide.added(fn) / Tide.removed(fn)
 Tide.at(model, t) / Tide.latest(model)
+Tide.owner(model) / Tide.isMine(model)
 Tide.stats() / Tide.Config
 
 -- server
 local handle = Tide.add(model, kind?, owner?)  -- kind defaults to "Bot"
 handle:teleport(cf) / handle:setOwner(player?) / handle:remove() / handle:alive()
+handle:markTeleport(target?)      -- snap a jump you made yourself
+handle:setAudience(fn | { Player } | nil) / Tide.focus(player, part | Vector3 | nil)
+handle:setOrigin(origin?)         -- far venues keep the 10-byte record
+handle:link(name, key)            -- rewind and intents from other VMs (Actors)
 Tide.handle(model) / Tide.remove(model)
 Tide.onSuspicious(function(player, reason) end)
 
 -- client
 Tide.drawn(model) / Tide.delay(model) / Tide.velocity(model)
+
+-- another VM of the server (an Actor)
+local venue = require(ReplicatedStorage.Tide.Shared.Link).open("Venue1")
+venue:at(key, t) / venue:latest(key) / venue:setOwner(key, userId?) / venue:teleport(key, cf)
 ```
+
+v0.4 additions are opt-in: a game that doesn't call them behaves and sends the same bytes as v0.3.
 
 Full reference: [API](https://acidgorgon.github.io/Tide/reference/api),
 [Config](https://acidgorgon.github.io/Tide/reference/config),
