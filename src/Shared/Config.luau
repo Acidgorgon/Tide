@@ -47,6 +47,11 @@ local Config = {
 	TeleportAckTime = 0.3, -- seconds after a server teleport during which the owner flags its uploads
 	startTimeout = 30, -- client Tide.start(): seconds to wait for the server's remotes before warning and returning false
 
+	-- Owner changes and streaming (v0.4; server settings, sent to clients; the defaults keep v0.3 behaviour)
+	ownerEase = false, -- an owner change keeps each receiver's render clock for the entity: the new source starts at the old delay and eases (clock 0.75x..1.1x); the old owner blends from its own pose
+	ownerStart = "drawn", -- where the new owner's copy starts: "drawn" (where Tide drew it), "latest" (newest received sample, carried to now), "server" (the server's pose, sent with the change)
+	rebindStreamed = false, -- client: a model whose Parent became nil (streamed out) is dropped and asked for again; a re-streamed model (new instance) is bound to the same entity
+
 	-- Animations (v0.2; see Shared/AnimWatch, Server/Anim, Client/AnimPlay)
 	animations = false, -- replay Animator play/stop/adjust events at each receiver's render time (server setting, sent)
 	animationsOwnerLocal = true, -- the owner client swaps in a client-created Animator so Roblox stops replicating its tracks (sent)

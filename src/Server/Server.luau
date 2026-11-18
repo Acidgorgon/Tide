@@ -21,6 +21,7 @@ local Lock = require(script.Parent.Lock)
 local Motion = require(script.Parent.Motion)
 local Anim = require(script.Parent.Anim)
 local StateLog = require(script.Parent.StateLog)
+local Mirror = require(script.Parent.Mirror)
 local StateSchema = require(Shared.StateSchema)
 local AnimRegistry = require(Shared.AnimRegistry)
 local Options = require(Shared.Options)
@@ -75,6 +76,30 @@ function Handle.teleport(self: any, cf: CFrame, velocity: Vector3?)
 	end
 end
 
+-- Flags a server-owned entity's jump as a teleport (receivers snap instead of sweeping)
+-- without moving it. No target: the entity is sampled now, flagged (call it after moving the
+-- model). A target (CFrame or Vector3): the first sample within Config.TeleportGrantRadius of
+-- it, in the next second, is flagged (for moves made elsewhere, e.g. another VM). Does nothing
+-- for client-owned entities (use teleport).
+function Handle.markTeleport(self: any, target: any)
+	local slot = liveSlot(self)
+	if slot then
+		Server.markTeleport(slot, target)
+	end
+end
+
+-- Quantization origin of this entity (nil: Config.origin). Packed positions cover +-1024
+-- studs around it; give entities far from Config.origin (another arena, a far venue) one
+-- near them to keep the compact record. Set it in the frame of Tide.add (it travels with the
+-- ADD); a later change sends the entity's records in the absolute form for a second while
+-- clients get it.
+function Handle.setOrigin(self: any, origin: Vector3?)
+	local slot = liveSlot(self)
+	if slot then
+		Server.setOrigin(slot, origin)
+	end
+end
+
 function Handle.remove(self: any)
 	local slot = liveSlot(self)
 	if slot then
@@ -89,8 +114,42 @@ function Handle.setOwner(self: any, player: any)
 	end
 end
 
+-- The owning player, nil when server-owned (or removed).
+function Handle.owner(self: any): Player?
+	local slot = liveSlot(self)
+	if slot then
+		return State.owner[slot] or nil
+	end
+	return nil
+end
+
 function Handle.alive(self: any): boolean
 	return liveSlot(self) ~= nil
+end
+
+-- Mirrors this entity's history into the link `name` under `key` (a string or number of
+-- yours) for code in other VMs (Shared/Link: rewind, owner/teleport intents). nil name: unlink.
+-- One entity per key; linking another entity under a taken key unlinks the first.
+function Handle.link(self: any, name: string?, key: any)
+	local slot = liveSlot(self)
+	if slot == nil then
+		return
+	end
+	if name == nil then
+		Mirror.unlink(slot)
+	else
+		Mirror.link(slot, name, key)
+	end
+end
+
+-- Who receives this entity: nil = every player (the default), a list (or set) of Players,
+-- or fn(player) -> boolean (asked every Config.InterestEvery). Receivers outside it get
+-- nothing of it (samples, animations, state), as if culled.
+function Handle.setAudience(self: any, audience: any)
+	local slot = liveSlot(self)
+	if slot then
+		Server.setAudience(slot, audience)
+	end
 end
 
 -- Slot of a model or handle (nil if not registered).
@@ -105,6 +164,15 @@ end
 -- Control messages
 --------------------------------------------------------------------------------
 
+local function writeOrigin(w: Control.Writer, slot: number)
+	local ox, oy, oz = Codec.getOrigin()
+	Control.u8(w, Control.ORIGIN)
+	Control.u16(w, slot)
+	Control.f64(w, State.ox[slot] or ox)
+	Control.f64(w, State.oy[slot] or oy)
+	Control.f64(w, State.oz[slot] or oz)
+end
+
 local function writeAdd(w: Control.Writer, slot: number)
 	local owner = State.owner[slot]
 	Control.u8(w, Control.ADD)
@@ -112,6 +180,9 @@ local function writeAdd(w: Control.Writer, slot: number)
 	Control.u8(w, State.kind[slot].id)
 	Control.u16(w, Control.inst(w, State.model[slot]))
 	Control.f64(w, if owner then owner.UserId else 0)
+	if State.ox[slot] ~= nil then
+		writeOrigin(w, slot)
+	end
 end
 
 local function writeHello(w: Control.Writer)
@@ -128,6 +199,17 @@ local function writeHello(w: Control.Writer)
 		if Config.animationsOwnerLocal then
 			flags += 4
 		end
+	end
+	if Config.ownerEase then
+		flags += 8
+	end
+	if Config.ownerStart == "latest" then
+		flags += 16
+	elseif Config.ownerStart == "server" then
+		flags += 32
+	end
+	if Config.rebindStreamed then
+		flags += 64
 	end
 	Control.u8(w, flags)
 	Control.u8(w, math.clamp(Config.UploadRedundancy, 1, 2))
@@ -217,7 +299,7 @@ local function onResend(player: any, rx: any, b: buffer, pos: number): number
 	if pos + count * 2 > n or count > 64 then
 		return n
 	end
-	local t = os.clock()
+	local t = now()
 	if t - (rx.resendT or -1) < 0.5 then
 		return pos + count * 2
 	end
@@ -225,7 +307,8 @@ local function onResend(player: any, rx: any, b: buffer, pos: number): number
 	local w = Control.writer(64)
 	for i = 0, count - 1 do
 		local slot = buffer.readu16(b, pos + i * 2)
-		if State.index[slot] ~= nil then
+		-- (not for entities whose audience leaves this receiver out: it gets nothing of them)
+		if State.index[slot] ~= nil and not rx.outside[slot] then
 			writeAdd(w, slot)
 		end
 	end
@@ -377,6 +460,11 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	State.forceTele[slot] = false
 	State.still[slot] = false
 	State.tpVel[slot] = nil
+	State.audience[slot] = nil
+	State.markUntil[slot] = nil
+	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+	State.originUntil[slot] = nil
+	State.addFrame[slot] = frame
 	Receive.reset(slot, t)
 
 	State.count += 1
@@ -415,6 +503,7 @@ function Server.remove(slot: number)
 	end
 	Lock.unlock(slot)
 	unwatch(slot)
+	Mirror.unlink(slot)
 	Anim.onRemove(slot)
 	State.endTeleport(slot)
 	local conn = State.conn[slot]
@@ -446,9 +535,14 @@ function Server.remove(slot: number)
 	State.handle[slot] = nil
 	State.conn[slot] = nil
 	State.tpVel[slot] = nil
+	State.audience[slot] = nil
+	State.markUntil[slot] = nil
+	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+	State.originUntil[slot] = nil
 	State.freedAt[slot] = now()
 	for _, rx in State.rxList do
 		rx.tier[slot] = nil
+		rx.outside[slot] = nil
 	end
 
 	Control.u8(bcast, Control.REMOVE)
@@ -502,7 +596,8 @@ function Server.teleport(slot: number, cf: CFrame, velocity: Vector3?)
 		local full = State.hist[slot].full
 		local x, y, z, yaw, qx, qy, qz, qw = Rig.fromCFrame(cf, full)
 		local _fl
-		x, y, z, yaw, _fl, qx, qy, qz, qw = Codec.quantize(x, y, z, yaw, if full then 3 else 1, qx, qy, qz, qw)
+		x, y, z, yaw, _fl, qx, qy, qz, qw =
+			Codec.quantize(x, y, z, yaw, if full then 3 else 1, qx, qy, qz, qw, State.ox[slot], State.oy[slot], State.oz[slot])
 		local h = State.hist[slot]
 		local stamp = math.max(t, Ring.newestT(h) + 0.0005)
 		Ring.push(h, stamp, x, y, z, yaw, 1, qx, qy, qz, qw)
@@ -531,6 +626,97 @@ function Server.teleport(slot: number, cf: CFrame, velocity: Vector3?)
 		end
 		State.forceTele[slot] = true
 		Ticker.sample(slot, math.max(t, Ring.newestT(State.hist[slot]) + 0.0005))
+	end
+end
+
+local ORIGIN_GRACE = 1.0 -- seconds of absolute-form records after a later origin change
+
+function Server.setOrigin(slot: number, origin: Vector3?)
+	if State.index[slot] == nil then
+		return
+	end
+	assert(origin == nil or typeof(origin) == "Vector3", "setOrigin: a Vector3 or nil expected")
+	local gx, gy, gz = Codec.getOrigin()
+	local x, y, z
+	if origin ~= nil then
+		-- on Config.origin's 1/64 grid, so samples move between the two without rounding
+		x = gx + math.round((origin.X - gx) * 64) / 64
+		y = gy + math.round((origin.Y - gy) * 64) / 64
+		z = gz + math.round((origin.Z - gz) * 64) / 64
+		if x ~= x or y ~= y or z ~= z or math.abs(x) == math.huge or math.abs(y) == math.huge or math.abs(z) == math.huge then
+			error("setOrigin: origin must be finite", 3)
+		end
+		if x == gx and y == gy and z == gz then
+			x, y, z = nil, nil, nil
+		end
+	end
+	if x == State.ox[slot] and y == State.oy[slot] and z == State.oz[slot] then
+		return
+	end
+	State.ox[slot], State.oy[slot], State.oz[slot] = x, y, z
+	if State.addFrame[slot] ~= frame then
+		-- clients learnt the entity already: ORIGIN may land after records encoded for it
+		State.originUntil[slot] = now() + ORIGIN_GRACE
+	end
+	writeOrigin(bcast, slot)
+end
+
+local MARK_WINDOW = 1.0 -- seconds a targeted markTeleport waits for the entity to arrive
+
+function Server.markTeleport(slot: number, target: any)
+	if State.index[slot] == nil or State.owner[slot] or State.kind[slot].motion == false then
+		return
+	end
+	local kind = typeof(target)
+	local t = now()
+	if target == nil then
+		State.forceTele[slot] = true
+		State.counters.teleportFlagged += 1
+		Ticker.sample(slot, math.max(t, Ring.newestT(State.hist[slot]) + 0.0005))
+		return
+	end
+	local p: Vector3
+	if kind == "CFrame" then
+		p = target.Position
+	elseif kind == "Vector3" then
+		p = target
+	else
+		error("markTeleport: target must be a CFrame, a Vector3 or nil", 3)
+	end
+	State.markX[slot], State.markY[slot], State.markZ[slot] = p.X, p.Y, p.Z
+	State.markUntil[slot] = t + MARK_WINDOW
+	-- it may already be there (moved earlier this frame)
+	Ticker.sample(slot, math.max(t, Ring.newestT(State.hist[slot]) + 0.0005))
+end
+
+-- Intents queued by other VMs on a link (Shared/Link), applied at the start of a frame.
+Mirror.apply = function(op: string, slot: number, intent: any)
+	if op == "owner" then
+		local user = intent.user
+		local player = nil
+		if type(user) == "number" and user ~= 0 then
+			player = Players:GetPlayerByUserId(user)
+			if player == nil then
+				error("no such player") -- counted as linkBad
+			end
+		end
+		Server.setOwner(slot, player)
+	elseif op == "teleport" then
+		local x, y, z = intent.x, intent.y, intent.z
+		local cf = CFrame.new(x, y, z, intent.qx, intent.qy, intent.qz, intent.qw)
+		local velocity = nil
+		if intent.vx ~= nil then
+			velocity = Vector3.new(intent.vx, intent.vy, intent.vz)
+		end
+		Server.teleport(slot, cf, velocity)
+	elseif op == "mark" then
+		local target = nil
+		if intent.x ~= nil then
+			target = Vector3.new(intent.x, intent.y, intent.z)
+		end
+		Server.markTeleport(slot, target)
+	else
+		error("unknown op")
 	end
 end
 
@@ -569,6 +755,36 @@ function Server.setOwner(slot: number, player: any?)
 	if old == (player or false) then
 		return
 	end
+	-- ownerStart = "server": the new owner starts from the server's pose (live for a
+	-- server-owned entity, else the newest accepted sample), carried to its arrival time
+	local pose: { number }? = nil
+	if player ~= nil and Config.ownerStart == "server" and State.kind[slot].motion ~= false then
+		local h = State.hist[slot]
+		local vx, vy, vz = Motion.velocity(slot)
+		local x, y, z, qx, qy, qz, qw, stamp
+		local model = State.model[slot]
+		if not old and model.Parent ~= nil then
+			local root = State.root[slot]
+			if root ~= nil and root.Parent == nil then
+				root = nil
+			end
+			local _yaw
+			x, y, z, _yaw, qx, qy, qz, qw = Rig.read(model, root, true)
+			stamp = now()
+		elseif h.n > 0 then
+			local p = h.last % h.cap + 1
+			x, y, z, stamp = h.x[p], h.y[p], h.z[p], h.t[p]
+			if h.full then
+				qx, qy, qz, qw = h.qx[p], h.qy[p], h.qz[p], h.qw[p]
+			else
+				local half = h.yaw[p] * 0.5
+				qx, qy, qz, qw = 0, math.sin(half), 0, math.cos(half)
+			end
+		end
+		if x ~= nil then
+			pose = { stamp, x, y, z, qx, qy, qz, qw, vx, vy, vz }
+		end
+	end
 	if old and State.charSlot[old] == slot then
 		State.charSlot[old] = nil
 	end
@@ -592,8 +808,63 @@ function Server.setOwner(slot: number, player: any?)
 	Control.u8(bcast, Control.OWNER)
 	Control.u16(bcast, slot)
 	Control.f64(bcast, if player then player.UserId else 0)
+	if pose ~= nil then
+		-- in the same broadcast, right after the OWNER (everyone else ignores it): the new
+		-- owner gets both at once, before its first upload
+		Control.u8(bcast, Control.OWNERPOSE)
+		Control.u16(bcast, slot)
+		Control.f64(bcast, pose[1])
+		for i = 2, 11 do
+			Control.f32(bcast, pose[i])
+		end
+	end
 	Anim.onOwner(slot, old)
 	StateLog.onOwner(slot, old)
+end
+
+function Server.setAudience(slot: number, audience: any)
+	if State.index[slot] == nil then
+		return
+	end
+	local value: any = nil
+	if type(audience) == "function" then
+		value = audience
+	elseif type(audience) == "table" then
+		local set = {}
+		for k, v in audience do
+			local player = if type(k) == "number" then v else k
+			if typeof(player) ~= "Instance" or not player:IsA("Player") then
+				error("setAudience: a list or set of Players expected", 3)
+			end
+			set[player] = true
+		end
+		value = table.freeze(set)
+	elseif audience ~= nil then
+		error("setAudience: expected a function, a list of Players or nil", 3)
+	end
+	State.audience[slot] = value
+	Relay.recomputeSlot(slot)
+end
+
+-- Interest centre of a player that has no "Player" entity (a spectator camera, a watched
+-- match): a BasePart or Model (followed), a Vector3, or nil (none). A character entity,
+-- while it exists, still wins.
+function Server.focus(player: any, target: any)
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "Tide.focus: player expected")
+	local kind = typeof(target)
+	assert(
+		target == nil or kind == "Vector3" or (kind == "Instance" and (target:IsA("BasePart") or target:IsA("Model"))),
+		"Tide.focus: target must be a BasePart, a Model, a Vector3 or nil"
+	)
+	local rx = State.rx[player]
+	if rx == nil then
+		return
+	end
+	rx.focus = target
+	rx.focusX, rx.focusY, rx.focusZ = nil, nil, nil
+	if rx.ready then
+		Relay.recomputeRx(rx)
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -761,6 +1032,16 @@ function Server.timeOf(_target: any): number
 	return now()
 end
 
+function Server.owner(target: any): any
+	local slot = Server.slotOf(target)
+	return if slot then State.owner[slot] or nil else nil
+end
+
+function Server.isMine(target: any): boolean
+	local slot = Server.slotOf(target)
+	return slot ~= nil and State.owner[slot] == false
+end
+
 function Server.handleOf(target: any): any
 	local slot = Server.slotOf(target)
 	return if slot then State.handle[slot] else nil
@@ -792,6 +1073,9 @@ local function onPlayerAdded(player: any)
 		player = player,
 		ready = false,
 		tier = {},
+		outside = {}, -- slots culled because the receiver is outside their audience
+		audCache = {}, -- audience function -> result, per recompute
+		focus = nil,
 		defer = {},
 		tokens = 0,
 		upTokens = Config.PlayerBytesPerSecond,
@@ -939,6 +1223,7 @@ local function onFrame(dt: number)
 	if lh then
 		LH.sample:begin()
 	end
+	Mirror.read()
 	Ticker.step(t, step)
 	Anim.step(t, step)
 	retryTeleports(t)
@@ -953,6 +1238,7 @@ local function onFrame(dt: number)
 	if lh then
 		LH.relay:finish()
 	end
+	Mirror.write()
 	countRates(t)
 end
 

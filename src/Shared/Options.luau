@@ -21,6 +21,7 @@ local INSTANCE = {
 local CHOICES = {
 	lockMode = { root = true, anchored = true },
 	teleportOnWriteVelocity = { zero = true, keep = true },
+	ownerStart = { drawn = true, latest = true, server = true },
 }
 
 -- Applies opts to Config; returns the extras the caller asked for (by name).

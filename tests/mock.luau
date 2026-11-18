@@ -192,6 +192,98 @@ function Mock.yawOf(cf)
 end
 
 --------------------------------------------------------------------------------
+-- SharedTable (v0.4 links): one Lua table per SharedTable, shared by reference between the
+-- envs of a world (the "VMs"). Keys: strings or numbers; values: nil, booleans, numbers,
+-- strings, vectors or SharedTables (SharedTable.new converts nested tables, assignment does
+-- not). No parallel phases here: atomicity is trivially true.
+--------------------------------------------------------------------------------
+
+local stStore = setmetatable({}, { __mode = "k" })
+local STMeta = { __robloxtype = "SharedTable" }
+
+local function stKey(k)
+	local t = type(k)
+	if t ~= "string" and t ~= "number" then
+		error(`SharedTable: invalid key type {t}`, 3)
+	end
+end
+
+local function stValue(v)
+	local t = type(v)
+	if t == "nil" or t == "boolean" or t == "number" or t == "string" or t == "vector" then
+		return
+	end
+	if t == "table" and getmetatable(v) == STMeta then
+		return
+	end
+	error(`SharedTable: invalid value type {t}`, 3)
+end
+
+STMeta.__index = function(st, k)
+	stKey(k)
+	return stStore[st][k]
+end
+STMeta.__newindex = function(st, k, v)
+	stKey(k)
+	stValue(v)
+	stStore[st][k] = v
+end
+STMeta.__iter = function(st)
+	return next, stStore[st]
+end
+
+local SharedTableLib = {}
+
+function SharedTableLib.new(t)
+	local st = setmetatable({}, STMeta)
+	stStore[st] = {}
+	if t ~= nil then
+		for k, v in t do
+			if type(v) == "table" and getmetatable(v) ~= STMeta then
+				v = SharedTableLib.new(v)
+			end
+			st[k] = v
+		end
+	end
+	return st
+end
+
+function SharedTableLib.increment(st, k, delta)
+	local old = st[k]
+	if type(old) ~= "number" then
+		error("SharedTable.increment: the element is not a number", 2)
+	end
+	st[k] = old + delta
+	return old
+end
+
+function SharedTableLib.update(st, k, fn)
+	st[k] = fn(st[k])
+end
+
+function SharedTableLib.size(st)
+	local n = 0
+	for _ in stStore[st] do
+		n += 1
+	end
+	return n
+end
+
+function SharedTableLib.clear(st)
+	table.clear(stStore[st])
+end
+
+function SharedTableLib.clone(st)
+	local c = SharedTableLib.new()
+	for k, v in stStore[st] do
+		stStore[c][k] = v
+	end
+	return c
+end
+
+Mock.SharedTable = SharedTableLib
+
+--------------------------------------------------------------------------------
 -- Globals
 --------------------------------------------------------------------------------
 
@@ -202,6 +294,7 @@ function Mock.installGlobals()
 		one = vector.one,
 	})
 	CFrame = CFrameLib
+	SharedTable = SharedTableLib
 	tick = os.clock
 	time = os.clock
 	Enum = {
@@ -371,6 +464,15 @@ function InstanceMT.__index(self, key)
 		local v = shadow[key]
 		if v ~= nil then
 			return v
+		end
+	end
+	if key == "Position" then
+		local cf = rawget(self, "CFrame")
+		if cf == nil and shadow ~= nil then
+			cf = shadow.CFrame
+		end
+		if type(cf) == "table" and getmetatable(cf) == CFrameMT then
+			return cf.Position
 		end
 	end
 	local method = Instance[key]
@@ -969,6 +1071,7 @@ function Mock.newWorld(opts: any?)
 	self.stats = { s2cCalls = 0, s2cBytes = 0, c2sCalls = 0, c2sBytes = 0, dropped = 0, oversize = 0 }
 	self.warnings = {}
 	self.streamedOut = {} -- [clientIndex] = { [serverInstance] = true }
+	self.sharedTables = {} -- SharedTableRegistry of the server's VMs
 	self.server = self:_newEnv(true, nil)
 	return self
 end
@@ -1051,6 +1154,20 @@ function World:_newEnv(isServer: boolean, clientIndex: number?)
 	if isServer then
 		env.ServerStorage = service("ServerStorage")
 	end
+	-- every server env (VM) of a world shares one registry; each client has its own
+	local tables = if isServer then world.sharedTables else {}
+	local Registry = service("SharedTableRegistry")
+	rawset(Registry, "GetSharedTable", function(_self, name)
+		local st = tables[name]
+		if st == nil then
+			st = SharedTableLib.new()
+			tables[name] = st
+		end
+		return st
+	end)
+	rawset(Registry, "SetSharedTable", function(_self, name, st)
+		tables[name] = st
+	end)
 
 	env.InstanceLib = {
 		new = function(className: string, parent)

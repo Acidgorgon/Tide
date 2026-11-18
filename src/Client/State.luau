@@ -9,6 +9,9 @@ State.localUserId = 0
 State.lockPlayers = true
 State.animations = false -- the server's Config.animations (hello)
 State.animSeeded = false
+State.ownerEase = false -- the server's Config.ownerEase (hello)
+State.ownerStart = "drawn" -- the server's Config.ownerStart (hello)
+State.rebindStreamed = false -- the server's Config.rebindStreamed (hello)
 
 State.model = {} :: { [number]: any }
 State.root = {} :: { [number]: any }
@@ -21,6 +24,12 @@ State.anchoredBefore = {} :: { [number]: boolean? }
 State.pkt = {} :: { [number]: number } -- last packet id that measured this entity's need
 State.dirtyFrom = {} :: { [number]: number } -- earliest time whose drawn path new samples may have changed (inf = none)
 State.gapE = {} :: { [number]: number } -- expected sample gap (moving samples; kind-shared buffers measure need against it)
+State.lag = {} :: { [number]: number } -- ownerEase: this entity's own delay while it eases to its source's (nil = the source's)
+State.blendIn = {} :: { [number]: boolean } -- ownerEase: first draw after losing ownership blends from the local pose
+State.ox = {} :: { [number]: number } -- the entity's own quantization origin (ORIGIN; nil = the hello's)
+State.oy = {} :: { [number]: number }
+State.oz = {} :: { [number]: number }
+State.lost = {} :: { [number]: any } -- rebindStreamed: the model that streamed out (Parent nil), until a model is bound again
 
 -- render
 State.drawn = {} :: { [number]: boolean }
@@ -98,6 +107,17 @@ State.counters = {
 	stateBad = 0, -- malformed state messages
 	stateClockErrors = 0, -- Tide.clock functions that errored or returned no number
 	stateMirrorErrors = 0, -- mirror attributes that could not be set
+	modelsLost = 0, -- rebindStreamed: models dropped because their Parent became nil (streamed out)
+	modelsRebound = 0, -- rebindStreamed: entities bound to a model again after one was dropped
 }
+
+-- The delay an entity is drawn at (its source's, or its own while easing after an owner change).
+function State.delayOf(slot: number): number
+	local lag = State.lag[slot]
+	if lag ~= nil then
+		return lag
+	end
+	return State.src[slot].delay
+end
 
 return State

@@ -67,6 +67,7 @@ local mine = State.mine
 local models = State.model
 local kinds = State.kind
 local srcs = State.src
+local lags = State.lag
 local counters = State.counters
 
 local wanted = {} :: { [number]: boolean } -- animated remote entities
@@ -182,7 +183,7 @@ end
 
 local function renderTime(slot: number, now: number): number
 	local src = srcs[slot]
-	return if src ~= nil then now - src.delay else now
+	return if src ~= nil then now - (lags[slot] or src.delay) else now
 end
 
 -- Puts this client's Animator under the entity's controller (replacing Roblox's).
@@ -535,7 +536,7 @@ function AnimPlay.step(now: number, dt: number)
 		driftAcc = 0
 		for slot in wanted do
 			if animators[slot] ~= nil then
-				fixDrift(slot, now - srcs[slot].delay)
+				fixDrift(slot, now - (lags[slot] or srcs[slot].delay))
 			end
 		end
 	end
@@ -547,7 +548,7 @@ function AnimPlay.step(now: number, dt: number)
 		local slot = active[k]
 		local q = queues[slot]
 		if q ~= nil and q.n > 0 and wanted[slot] then
-			local rt = now - srcs[slot].delay
+			local rt = now - (lags[slot] or srcs[slot].delay)
 			while q.n > 0 and q.t[q.head] <= rt do
 				if budget <= 0 then
 					return

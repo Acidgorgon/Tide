@@ -41,6 +41,19 @@ bot:remove()
 
 A handle stays safe to call after the entity is gone: its methods do nothing.
 
+### Jumps you make yourself
+
+`teleport` flags the move, so every client snaps. A jump made some other way (`model:PivotTo` in game
+code, another VM) is sampled like any motion, and clients sweep across it. Two ways to flag it:
+
+```lua
+model:PivotTo(spawn)
+bot:markTeleport()               -- after the move: sampled now, flagged
+
+bot:markTeleport(spawn)          -- the first sample near spawn in the next second is flagged
+Tide.kind("Bot", { teleportDistance = 30 }) -- any jump over 30 studs between two samples
+```
+
 ## Kinds
 
 A kind is a named set of options shared by many entities. Three are built in:
@@ -102,6 +115,15 @@ ballHandle:setOwner(nil)     -- back to the server
 
 Tide does not change Roblox network ownership. The owning client uploads the pose of *its own copy*, so
 make sure that client is the one moving it (for physics, `part:SetNetworkOwner(player)`).
+
+`Tide.owner(model)` and `handle:owner()` say who owns it; `Tide.isMine(model)` says whether this side
+simulates it (on the server: server-owned; on a client: owned by this client).
+
+At an owner change, each other client switches the entity to a new source, which by default jumps its
+drawing to the new source's delay, and the new owner starts from where Tide drew its copy, a render
+delay behind. For entities that change hands often (a ball), turn on `Config.ownerEase` (receivers keep
+their clock and ease) and set `Config.ownerStart` to `"latest"` or `"server"` (the new owner starts from
+the newest sample or the server's pose). See [Config](/reference/config#owner-changes).
 
 If the owner leaves, the entity goes back to the server automatically. While a player owns it, it is
 [locked](/guide/players#the-lock) like a character (when `lockPlayers` is on), and a server

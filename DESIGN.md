@@ -286,3 +286,52 @@ and tackle statuses) lands on the same timeline as the body. Design from the res
   culled; state and history only. For the ball until the ball channel exists.
 - Not done (proposal 3.8 and later): owner-local `Tide.predict`, a latest-value field mode on the
   unreliable stream, a ball channel.
+
+## Venues, owner changes, other VMs (v0.4)
+
+Goal: one server running several matches or venues (FM: a stadium per match, spectators without a
+character, venue code in Actors). Seven additive changes; every one is opt-in, and a v0.3 game sends the
+same bytes (HELLO flags stay 0, protocol version stays 4, tags 17 and 18 only when used).
+
+- Interest without a character: `Tide.focus(player, BasePart | Model | Vector3 | nil)` is the receiver's
+  position when it has no `"Player"` entity (a character still wins; a part that goes away keeps its last
+  position). Per-entity audiences: `handle:setAudience(fn(player) -> boolean | { Player } | nil)`.
+  Receivers outside it get tier 4 (culled: no samples, animations or state, and RESEND is not answered);
+  a function is asked every `Config.InterestEvery` and cached per receiver (errors count and mean no).
+  Coming back in starts like a cull exit (state snapshot, no hysteresis). Measured on the mock (4 matches
+  x 22 bodies, 8 viewers per match): 70.9 KB/s per player to 17.8 KB/s.
+- Server-owned jumps made without `handle:teleport` (a `PivotTo` from game code, another VM): kind option
+  `teleportDistance` (default `math.huge`) flags a sample farther than that from the previous one, and
+  `handle:markTeleport(target?)` flags the next sample (no target: sampled now) or the first one within
+  `Config.TeleportGrantRadius` of a CFrame / Vector3 target in the next second. Counted in
+  `teleportFlagged`.
+- Other VMs (`Shared/Link`, `handle:link(name, key)`): the Tide VM copies each linked entity's new history
+  samples into the SharedTable `"Tide:<name>"` at the end of its frame (one packed string per sample, then
+  `last`; history is append-only on the server). A reader in any VM copies them once into its own Ring and
+  runs the same Interp: `venue:at(key, t)` is `Tide.at` (up to a frame behind). Intents (`setOwner`,
+  `teleport`, `markTeleport`) go into a queue (`SharedTable.increment` hands out an index) that the Tide
+  VM drains at the start of its next frame, in order, for keys linked then (`linkUnknown`, `linkBad`).
+  No reply, never synchronous. SharedTable semantics (atomic increment, visibility between parallel and
+  serial phases) are from the documentation and need a Studio check.
+- Owner changes: `Config.ownerEase` makes a receiver keep its render clock for the entity across an
+  owner change (the new source starts at the old delay and eases to its own at 0.75x..1.1x of real
+  time), and the old owner blends from its own pose. `Config.ownerStart` = `"drawn"` (v0.3: where Tide
+  drew the copy) | `"latest"` (the newest received sample, carried to now) | `"server"` (17 OWNERPOSE,
+  the server's live pose for a server-owned entity or its newest sample, sent with the OWNER). Measured on
+  the mock (body at 20 studs/s, owner flipping server <-> client 1 every 0.75 s, client 2 watching,
+  buffer 0.12, worst one-frame step error on client 2; one frame's own step is 0.33):
+  30 / 60 / 100 ms one-way: v0.3 1.00 / 2.32 / 4.72 studs, `ownerEase` 0.19 / 0.24 / 0.33.
+  The server's history stepped back at each grant by 1.41 / 0.75 / 0.38 studs with `"drawn"` and by 0
+  with `"latest"` and `"server"`.
+- Per-entity origin: `handle:setOrigin(origin?)` (snapped to `Config.origin`'s 1/64 grid; 18 ORIGIN after
+  the ADD and to late joiners). Records and the server's history quantize around it, so venues far from
+  `Config.origin` keep the compact record (measured: 14 B with full rotation vs 26 B in the absolute
+  form). A change after the entity's first frame sends absolute records for a second so a client never
+  decodes a record against the wrong origin. Uploads keep the global origin; the server re-quantizes
+  them.
+- Streamed-out models: with `Config.rebindStreamed` a client treats a model whose Parent became nil as
+  missing (dropped, `removed` fires, RESEND asks for it); the re-streamed instance is bound to the same
+  entity and keeps its ring and delay (`modelsLost`, `modelsRebound`). A model the game parents back
+  itself is bound again locally. RESEND replies are now rate limited on server time.
+- `Tide.owner(model)`, `Tide.isMine(model)`, `handle:owner()`: on the server "mine" is a registered
+  server-owned entity; on a client, an entity this client owns and uploads.

@@ -43,6 +43,8 @@ local sin = math.sin
 local cos = math.cos
 
 local owner = State.owner
+local oxs, oys, ozs = State.ox, State.oy, State.oz
+local quantize = Codec.quantize
 local hist = State.hist
 local kinds = State.kind
 local index = State.index
@@ -261,6 +263,12 @@ function Receive.handle(player: any, rx: any, payload: any, now: number, frame: 
 			stampBank[slot] = if bank > STAMP_SLACK then STAMP_SLACK else bank
 			lastArr[slot] = now
 			speedSince[slot] = nil
+		end
+		local cx = oxs[slot]
+		if cx ~= nil then
+			-- the entity has its own origin: keep what receivers will decode (relayed relative to it)
+			local _fl
+			x, y, z, yaw, _fl, qx, qy, qz, qw = quantize(x, y, z, yaw, if full then 2 else 0, qx, qy, qz, qw, cx, oys[slot], ozs[slot])
 		end
 		push(h, stamp, x, y, z, yaw, 0, qx, qy, qz, qw)
 		counters.samples += 1

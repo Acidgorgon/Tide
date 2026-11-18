@@ -6,16 +6,22 @@
 --                                          -- characters become kind "Player", owned by their player
 --   local bot = Tide.add(model, "Bot")     -- server-owned; returns a handle
 --   bot:teleport(cf, velocity?)  bot:remove()  bot:setOwner(player?)
+--   bot:setAudience(fn(player) -> boolean | { Player } | nil)   -- who receives it (v0.4)
+--   bot:markTeleport(target?)  bot:setOrigin(origin?)  bot:link(name?, key)          (v0.4)
+--   Tide.focus(player, part | model | Vector3 | nil)          -- interest without a character (v0.4)
 --   Tide.at(model, t)                      -- rewind: CFrame at server time t (what clients drew)
 --   Tide.latest(model)                     -- newest accepted sample
 --   Tide.velocity(model)                   -- from history
 --   Tide.kind("Ball", { rate = 60, rotation = "full" })
 --   Tide.onSuspicious(function(player, reason) end)
+-- other VMs of the server (Actors), v0.4: require(ReplicatedStorage.Tide.Shared.Link).open(name)
+--   venue:at(key, t)  venue:latest(key)  venue:setOwner(key, userId?)  venue:teleport(key, cf)
 -- client
 --   Tide.start()                           -- false if the server's remotes never appear (Config.startTimeout)
 --   Tide.drawn(model)  Tide.delay(model)  Tide.velocity(model)  Tide.latest(model)
 --   Tide.sampleInfo(model, into?)          -- stream health: newest, count, age, interval, jitter, idle, ...
 -- both
+--   Tide.owner(model) -> Player?   Tide.isMine(model) -> boolean   (v0.4)
 --   Tide.added(fn(model, kindName, owner))  Tide.removed(fn(model, kindName))
 --   Tide.stats()  Tide.Config
 -- animations (Config.animations = true; game code keeps playing on the Animator as before)
@@ -74,6 +80,18 @@ end
 
 function Tide.latest(model: any): CFrame?
 	return Side.latest(model)
+end
+
+-- The player that owns (samples and uploads) an entity, nil when the server owns it or the
+-- entity is unknown. (v0.4)
+function Tide.owner(model: any): Player?
+	return Side.owner(model)
+end
+
+-- Is the entity sampled on this side: server, a registered server-owned entity; client, an
+-- entity this client owns and uploads (Tide does not draw it). (v0.4)
+function Tide.isMine(model: any): boolean
+	return Side.isMine(model)
 end
 
 function Tide.stats(): { [string]: number }
@@ -195,6 +213,12 @@ if IS_SERVER then
 
 	function Tide.at(target: any, t: number): CFrame?
 		return Side.at(target, t)
+	end
+
+	-- Interest centre for a player without a "Player" entity (spectating, watching a match):
+	-- a BasePart or Model (followed), a Vector3, or nil.
+	function Tide.focus(player: Player, target: any)
+		Side.focus(player, target)
 	end
 
 	function Tide.onSuspicious(fn: (player: Player, reason: string) -> ())

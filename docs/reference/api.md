@@ -57,6 +57,7 @@ Up to 255 kinds; names under 64 characters. Errors on an unknown option or a val
 | `maxFall` | number | 300 | server | studs/s downwards (client-owned speed check; also caps client extrapolation) |
 | `maxRise` | number | 60 | server | studs/s upwards (client-owned speed check; also caps client extrapolation) |
 | `keepAlive` | number | 0.5 | server | seconds between samples of an idle entity (server-owned samples and client uploads) |
+| `teleportDistance` | number | `math.huge` | server | studs: a server-owned sample this far from the previous one is flagged a teleport (receivers snap instead of sweeping). For jumps game code makes without `handle:teleport` |
 | `apply` | `"cframe"` \| `"none"` \| `(model, CFrame) -> ()` | `"cframe"` | client | how a client applies the drawn pose |
 | `afterApply` | `false` \| `(model, CFrame) -> ()` | `false` | client | called each frame after the pose is applied (the default apply, anchoring included, still runs); errors count as `applyErrors` |
 | `animations` | boolean | `true` | server | `false`: this kind's animations stay Roblox's when `Config.animations` is on |
@@ -119,6 +120,32 @@ and the newest after it ends. `nil` if Tide doesn't know the target.
 
 ```lua
 local cf = Tide.at(victim.Character, seenAt)
+```
+
+Code in another VM of the server (an Actor) rewinds through a [link](#links-other-vms).
+
+### Tide.owner
+
+```lua
+Tide.owner(target) -> Player?
+```
+
+The player that owns the entity, or `nil` for server-owned (and unknown) entities. A client learns
+owner changes with the reliable OWNER message.
+
+### Tide.isMine
+
+```lua
+Tide.isMine(target) -> boolean
+```
+
+Whether this side samples the entity. Server: a registered server-owned entity. Client: an entity this
+client owns and uploads (Tide doesn't draw it). `false` for unknown models.
+
+```lua
+if Tide.isMine(ball) then
+	applyKick(ball) -- only the side that simulates the ball moves it
+end
 ```
 
 ### Tide.play
@@ -237,10 +264,11 @@ A copy of the counters.
 
 | Side | Counters |
 |---|---|
-| server | `packets`, `samples`, `badPacket`, `owner`, `stamp`, `nan`, `speed`, `rate`, `errors`, `relayBytes`, `relayPackets`, `budgetDropped`, `spacing` (uploads closer than half an interval), `teleportWait` (owner uploads dropped while a teleport is unacknowledged), `teleportIgnored`, `inBytes` (all bytes received from clients), `inBytesPerSecond`, `relayBytesPerSecond` (both over the last second) |
+| server | `packets`, `samples`, `badPacket`, `owner`, `stamp`, `nan`, `speed`, `rate`, `errors`, `relayBytes`, `relayPackets`, `budgetDropped`, `spacing` (uploads closer than half an interval), `teleportWait` (owner uploads dropped while a teleport is unacknowledged), `teleportIgnored`, `teleportFlagged` (server-owned samples flagged by `teleportDistance` or `markTeleport`), `inBytes` (all bytes received from clients), `inBytesPerSecond`, `relayBytesPerSecond` (both over the last second) |
+| server, links | `linkUnknown` (intents for keys not linked: dropped), `linkBad` (intents that failed: unknown player, malformed, or never written) |
 | server, animations | `animEvents` (accepted), `animBad` (malformed), `animRate`, `animOwner`, `animStamp` (older than the entity's previous event), `animUnknown` (unknown id or priority), `animDropped` (kind opted out), `animRegister` (refused id requests), `animIdsFull`, `animRelayBytes` |
 | server, state | `stateSets` (changes recorded), `stateSame` (sets of the current value, skipped), `stateClamped` (stamps clamped), `stateSnaps`, `stateRelayBytes`, `stateRejected` (state messages from clients), `stateNoEntity` (sets on non-entities, ignored) |
-| client | `packets`, `records`, `badPacket`, `unknownSlot`, `late`, `uploads`, `uploadBytes`, `uploadSkipped` (idle samples not uploaded), `applyErrors` |
+| client | `packets`, `records`, `badPacket`, `unknownSlot`, `late`, `uploads`, `uploadBytes`, `uploadSkipped` (idle samples not uploaded), `applyErrors`, `modelsLost` (models dropped when streamed out, `rebindStreamed`), `modelsRebound` (re-streamed instances bound again) |
 | client, animations | `animSent`, `animApplied`, `animSnaps`, `animIgnored`, `animOverflow` (applied early: queue full), `animDrift` (tracks put back on the render clock), `animUnknown`, `animBad`, `animSwapped`, `animSwapSkipped` (owner `Animator` already in use) |
 | client, state | `stateApplied`, `stateLate` (arrived after its time), `stateStale` (older than the applied value, skipped), `stateOverflow` (applied early: queue full), `stateSnaps`, `stateBad` (malformed), `stateClockErrors`, `stateMirrorErrors` |
 
@@ -354,6 +382,21 @@ animation id, over 64 id requests a minute, over the player's share of new ids, 
 reached).
 Rate limited to 4 calls per second per player; runs in its own thread.
 
+### Tide.focus
+
+```lua
+Tide.focus(player: Player, target: BasePart | Model | Vector3 | nil)
+```
+
+Where a player without a `"Player"` entity (a spectator, a menu camera, a player watching another
+match) is for [interest](/guide/interest#without-a-character): distances are measured from the part
+or model (followed as it moves) or the point. While the player has a character entity, the character
+wins. `nil` removes it. Without a character or a focus, a receiver gets everything as "far".
+
+```lua
+Tide.focus(player, stadium.CameraPart)
+```
+
 ### Tide.velocity (server)
 
 ```lua
@@ -369,7 +412,12 @@ after a teleport, the velocity given to it. A locked character's locker gets thi
 
 ```lua
 handle:teleport(cf: CFrame, velocity: Vector3?)
+handle:markTeleport(target: CFrame | Vector3 | nil)
 handle:setOwner(player: Player?)
+handle:owner() -> Player?
+handle:setAudience(audience: ((player: Player) -> boolean) | { Player } | nil)
+handle:setOrigin(origin: Vector3?)
+handle:link(name: string?, key: string | number)
 handle:remove()
 handle:alive() -> boolean
 handle.model -- the registered model
@@ -384,9 +432,60 @@ handle.model -- the registered model
   `velocity`, if given, is set on the root (by the owner for client-owned entities). With
   `Config.teleportOnWrite`, server code that sets a client-owned root's `CFrame` or calls `PivotTo` on
   the model teleports it the same way.
-- `setOwner`: hands the entity to a player, or back to the server with `nil`.
+- `markTeleport`: flags a jump of a server-owned entity that game code made itself (`PivotTo`, a CFrame
+  write, another VM), so receivers snap instead of sweeping. No target: the entity is sampled now,
+  flagged; call it after moving the model. A target: the first sample within
+  `Config.TeleportGrantRadius` of it in the next second is flagged, for moves that land later. Does
+  nothing for client-owned entities (use `teleport`). See also the kind option `teleportDistance`.
+- `setOwner`: hands the entity to a player, or back to the server with `nil`. See
+  [Config.ownerEase and ownerStart](/reference/config#owner-changes) for smoother changes.
+- `owner`: the owning player, `nil` when server-owned or removed.
+- `setAudience`: who receives the entity. `nil` (the default): every player. A list (or set) of
+  players: only them. A function: asked for each player every `Config.InterestEvery` (0.1 s); an error
+  counts in `errors` and means no. Players outside it get nothing of the entity (samples, animations,
+  state), as if culled; coming back in, they get a state snapshot like any cull exit. An owner outside
+  the audience still uploads. See [Interest](/guide/interest#audiences).
+- `setOrigin`: the entity's own quantization origin (`nil`: `Config.origin`), snapped to
+  `Config.origin`'s 1/64 grid. Packed positions cover ±1024 studs around it, so entities far from
+  `Config.origin` (another arena, a far venue) keep the 10-byte record. Set it in the same frame as
+  `Tide.add` (it travels with the ADD); a later change sends the entity's records in the absolute form
+  (+12 B) for a second while clients learn it.
+- `link`: mirrors the entity's history into the link `name` under `key` for code in other VMs (see
+  [Links](#links-other-vms)). `nil` name unlinks. One entity per key: linking another entity under a
+  taken key unlinks the first.
 - `remove`: same as `Tide.remove`.
 - `alive`: `false` once the entity is removed. Methods on a dead handle do nothing.
+
+### Links (other VMs)
+
+```lua
+-- any VM of the server, e.g. a venue Actor's script
+local Link = require(ReplicatedStorage.Tide.Shared.Link)
+local venue = Link.open(name: string)
+venue:has(key) -> boolean
+venue:at(key, t: number) -> CFrame?
+venue:latest(key) -> (CFrame?, number?)
+venue:setOwner(key, userId: number?)
+venue:teleport(key, cf: CFrame, velocity: Vector3?)
+venue:markTeleport(key, target: CFrame | Vector3 | nil)
+```
+
+Tide's server runs in one VM (it owns the remotes). `handle:link(name, key)` in that VM mirrors the
+entity's accepted samples into a `SharedTable` registered as `"Tide:" .. name` at the end of each frame.
+In any other VM, `Link.open(name)` reads it:
+
+- `at` and `latest` answer what `Tide.at` / `Tide.latest` answer in the Tide VM, from the same samples
+  with the same interpolation, up to one Tide frame behind. `nil` for keys not linked. `latest` also
+  returns the sample's server time.
+- `setOwner`, `teleport` and `markTeleport` queue intents. The Tide VM applies them at the start of its
+  next frame, in order, as `handle:setOwner` (by `UserId`; `nil` or `0` is the server), `handle:teleport`
+  and `handle:markTeleport`. There is no reply and nothing is synchronous: read `Tide.owner` /
+  `venue:latest` later to see the result. Intents for keys not linked then are dropped
+  (`linkUnknown`); ones that fail are dropped too (`linkBad`).
+
+Nothing is mirrored until something is linked. Each mirrored sample costs one `SharedTable` write (a
+73-byte string) plus one for the entity's newest index. See
+[Time and rewind](/guide/time-and-rewind#other-vms-actors) for an example and the limits.
 
 ## Client
 

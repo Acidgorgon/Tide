@@ -95,6 +95,8 @@ end
 local function setMine(slot: number, isMine: boolean)
 	local was = State.mine[slot]
 	State.mine[slot] = isMine
+	State.lag[slot] = nil
+	State.blendIn[slot] = nil
 	if isMine then
 		restoreAnchor(slot)
 		Upload.reset(slot, now())
@@ -102,10 +104,56 @@ local function setMine(slot: number, isMine: boolean)
 	else
 		if was then
 			Ring.clear(State.ring[slot])
+			local root = State.root[slot]
+			if State.ownerEase and root ~= nil and root.Parent ~= nil then
+				-- ownerEase: the first draw blends from where this client's copy stands
+				local x, y, z, yaw = Rig.fromCFrame(root.CFrame, false)
+				State.dX[slot], State.dY[slot], State.dZ[slot], State.dYaw[slot] = x, y, z, yaw
+				State.blendIn[slot] = true
+			end
 		end
 		anchorIfDriven(slot)
 	end
 	animUpdate(slot)
+end
+
+-- Moves the copy of an entity this client now owns to a pose (ownerStart), keeping the
+-- root's offset in the model, and gives the root that velocity.
+local function startAt(slot: number, cf: CFrame, vx: number, vy: number, vz: number)
+	local model = State.model[slot]
+	local root = State.root[slot]
+	if model == nil then
+		return
+	end
+	if root ~= nil and root ~= model then
+		model:PivotTo(cf * root.CFrame:ToObjectSpace(model:GetPivot()))
+	else
+		model:PivotTo(cf)
+	end
+	local part = root or (model:IsA("Model") and model.PrimaryPart) or nil
+	if part ~= nil and not part.Anchored then
+		part.AssemblyLinearVelocity = Vector3.new(vx, vy, vz)
+	end
+end
+
+-- ownerStart = "latest": the newest received sample, carried to now with the stream's
+-- velocity (at most Config.MaxBuffer; not past a stale stream's end).
+local function startLatest(slot: number)
+	local r = State.ring[slot]
+	if r.n == 0 then
+		return
+	end
+	local kind = State.kind[slot]
+	local t = now()
+	local age = t - Ring.newestT(r)
+	local carry = if age <= Config.SnapGap then Config.MaxBuffer else 0
+	local x, y, z, yaw, qx, qy, qz, qw = Interp.sample(r, t, carry, 0.5 / kind.rate, kind.maxSpeed, kind.maxRise, kind.maxFall)
+	local vx, vy, vz = 0, 0, 0
+	if carry > 0 then
+		local px, py, pz = Interp.sample(r, t - 0.05, carry, 0.5 / kind.rate, kind.maxSpeed, kind.maxRise, kind.maxFall)
+		vx, vy, vz = (x - px) / 0.05, (y - py) / 0.05, (z - pz) / 0.05
+	end
+	startAt(slot, Rig.cframe(x, y, z, yaw, r.full, qx, qy, qz, qw), vx, vy, vz)
 end
 
 local function ownerPlayer(ownerId: number): any
@@ -133,6 +181,44 @@ local function setModel(slot: number, model: any)
 	if model ~= nil then
 		State.bySlotModel[model] = slot
 	end
+end
+
+-- rebindStreamed: the entity's model left the DataModel (streamed out). Forget it, keep the
+-- stream; retryModels asks for the entity again and the model that comes back (a new
+-- instance once re-streamed) is bound to the same slot.
+local function dropModel(slot: number)
+	local model = State.model[slot]
+	if model == nil then
+		return
+	end
+	restoreAnchor(slot)
+	if State.bySlotModel[model] == slot then
+		State.bySlotModel[model] = nil
+	end
+	State.lost[slot] = model
+	State.model[slot] = nil
+	State.root[slot] = nil
+	State.cf[slot] = nil
+	State.drawn[slot] = false
+	State.counters.modelsLost += 1
+	animUpdate(slot)
+	local kind = State.kind[slot]
+	Signal.fire(Client.removedSignal, model, kind and kind.name)
+end
+
+-- Binds a model to an entity that has none (late arrival, or after dropModel).
+local function attachModel(slot: number, model: any)
+	if State.lost[slot] ~= nil then
+		State.lost[slot] = nil
+		State.counters.modelsRebound += 1
+	end
+	setModel(slot, model)
+	if not State.mine[slot] then
+		anchorIfDriven(slot)
+	end
+	animUpdate(slot)
+	StateApply.onModel(slot)
+	Signal.fire(Client.addedSignal, model, State.kind[slot].name, ownerPlayer(State.ownerId[slot]))
 end
 
 local function removeEntity(slot: number)
@@ -165,6 +251,10 @@ local function removeEntity(slot: number)
 	State.cf[slot] = nil
 	State.drawn[slot] = false
 	State.mine[slot] = false
+	State.lag[slot] = nil
+	State.blendIn[slot] = nil
+	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+	State.lost[slot] = nil
 	Signal.fire(Client.removedSignal, model, kind and kind.name)
 end
 
@@ -174,15 +264,13 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 		if same and State.model[slot] == model then
 			return -- repeated ADD (answer to an earlier resend)
 		end
+		local old = State.model[slot]
+		if same and old ~= nil and model ~= nil and State.rebindStreamed and old.Parent == nil then
+			dropModel(slot) -- a re-streamed model (new instance) replaces one that streamed out
+		end
 		if same and State.model[slot] == nil and model ~= nil then
 			-- model arrived late (streaming): attach it, keep the stream
-			setModel(slot, model)
-			if not State.mine[slot] then
-				anchorIfDriven(slot)
-			end
-			animUpdate(slot)
-			StateApply.onModel(slot)
-			Signal.fire(Client.addedSignal, model, kind.name, ownerPlayer(ownerId))
+			attachModel(slot, model)
 			return
 		end
 		removeEntity(slot)
@@ -201,6 +289,10 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 	State.vX[slot], State.vY[slot], State.vZ[slot] = 0, 0, 0
 	State.lastRT[slot] = -math.huge
 	State.mine[slot] = false
+	State.lag[slot] = nil
+	State.blendIn[slot] = nil
+	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+	State.lost[slot] = nil
 	State.count += 1
 	State.active[State.count] = slot
 	State.index[slot] = State.count
@@ -227,6 +319,10 @@ local function readHello(b: buffer, pos: number, insts: { any }): number
 	local flags = buffer.readu8(b, pos + 25)
 	State.lockPlayers = flags % 2 == 1
 	local anims = (flags // 2) % 2 == 1
+	State.ownerEase = (flags // 8) % 2 == 1
+	local start = (flags // 16) % 4
+	State.ownerStart = if start == 1 then "latest" elseif start == 2 then "server" else "drawn"
+	State.rebindStreamed = (flags // 64) % 2 == 1
 	Config.UploadRedundancy = buffer.readu8(b, pos + 26)
 	local n = buffer.readu8(b, pos + 27)
 	pos += 28
@@ -375,13 +471,50 @@ local function handleControl(payload: any, insts: any)
 			local ownerId = buffer.readf64(b, pos + 2)
 			pos += 10
 			if State.index[slot] ~= nil then
+				local wasMine = State.mine[slot]
+				local before = State.delayOf(slot)
 				State.ownerId[slot] = ownerId
-				setMine(slot, ownerId ~= 0 and ownerId == State.localUserId)
+				local isMine = ownerId ~= 0 and ownerId == State.localUserId
+				setMine(slot, isMine)
 				if ownerId ~= 0 and State.src[slot] == State.srcByKind[State.kind[slot]] then
 					State.src[slot] = sourceFor(State.kind[slot], ownerId)
 				elseif ownerId == 0 then
 					State.src[slot] = sourceFor(State.kind[slot], 0)
 				end
+				if State.ownerEase and not isMine and not wasMine and State.drawn[slot] then
+					-- keep this entity's render clock: start at the old delay, ease to the new source's
+					State.lag[slot] = before
+				end
+				if isMine and not wasMine and State.ownerStart == "latest" and State.kind[slot].motion ~= false then
+					startLatest(slot)
+				end
+			end
+		elseif tag == Control.ORIGIN then
+			local slot = buffer.readu16(b, pos)
+			local x = buffer.readf64(b, pos + 2)
+			local y = buffer.readf64(b, pos + 10)
+			local z = buffer.readf64(b, pos + 18)
+			pos += 26
+			if State.index[slot] ~= nil then
+				local gx, gy, gz = Codec.getOrigin()
+				if x == gx and y == gy and z == gz then
+					State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+				else
+					State.ox[slot], State.oy[slot], State.oz[slot] = x, y, z
+				end
+			end
+		elseif tag == Control.OWNERPOSE then
+			local slot = buffer.readu16(b, pos)
+			local stamp = buffer.readf64(b, pos + 2)
+			local v = table.create(10, 0)
+			for i = 1, 10 do
+				v[i] = buffer.readf32(b, pos + 10 + (i - 1) * 4)
+			end
+			pos += 50
+			if State.index[slot] ~= nil and State.mine[slot] and State.ownerStart == "server" then
+				local age = math.clamp(now() - stamp, 0, Config.MaxBuffer)
+				local cf = CFrame.new(v[1] + v[8] * age, v[2] + v[9] * age, v[3] + v[10] * age, v[4], v[5], v[6], v[7])
+				startAt(slot, cf, v[8], v[9], v[10])
 			end
 		elseif tag == Control.TELEPORT then
 			local slot = buffer.readu16(b, pos)
@@ -454,9 +587,22 @@ local function checkRoots(dt: number)
 		return
 	end
 	rootAcc = 0
+	local rebind = State.rebindStreamed
 	for k = 1, State.count do
 		local slot = State.active[k]
 		local model = State.model[slot]
+		if rebind then
+			if model ~= nil and model.Parent == nil then
+				dropModel(slot)
+				model = nil
+			elseif model == nil then
+				local lost = State.lost[slot]
+				if lost ~= nil and lost.Parent ~= nil then
+					attachModel(slot, lost) -- it came back as the same instance
+					model = lost
+				end
+			end
+		end
 		local root = State.root[slot]
 		if model ~= nil and (root == nil or root.Parent == nil) then
 			if root ~= nil then
@@ -659,12 +805,26 @@ function Client.drawn(model: any): CFrame?
 	)
 end
 
+-- This client owns the entity (uploads it; Tide does not draw it).
+function Client.isMine(model: any): boolean
+	local slot = slotOf(model)
+	return slot ~= nil and State.mine[slot] == true
+end
+
+function Client.owner(model: any): any
+	local slot = slotOf(model)
+	if slot == nil then
+		return nil
+	end
+	return ownerPlayer(State.ownerId[slot])
+end
+
 function Client.delay(model: any): number
 	local slot = slotOf(model)
 	if slot == nil or State.mine[slot] then
 		return 0
 	end
-	return State.src[slot].delay
+	return State.delayOf(slot)
 end
 
 function Client.velocity(model: any): Vector3
@@ -744,7 +904,7 @@ function Client.sampleInfo(model: any, into: { [string]: any }?): { [string]: an
 	local ts, xs, ys, zs, yaws, fls = r.t, r.x, r.y, r.z, r.yaw, r.fl
 	local p = last % cap + 1
 	local t = now()
-	local delay = State.src[slot].delay
+	local delay = State.delayOf(slot)
 	local newest = ts[p]
 	info.newest = newest
 	info.count = last

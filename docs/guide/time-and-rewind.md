@@ -87,3 +87,45 @@ good upper bound.
 The client's draw is the server's curve plus a short correction blend and bounded extrapolation, so
 the two can differ by a fraction of a stud while a correction is blending out. Give your hitboxes
 that much slack.
+
+## Other VMs (Actors)
+
+Tide's server runs in one Luau VM, the one that called `Tide.start` (it owns the remotes). Code in
+another VM, such as a venue's Actor, can't call `Tide.at` there. Link the entities it needs instead:
+
+::: code-group
+
+```lua [Tide's VM]
+local body = Tide.add(model, "Body")
+body:link("Venue1", playerId) -- mirrored into the link "Venue1" under this key (a string or number)
+```
+
+```lua [the venue's Actor]
+local Link = require(ReplicatedStorage.Tide.Shared.Link)
+local venue = Link.open("Venue1")
+
+local cf = venue:at(playerId, seenAt)  -- what Tide.at(model, seenAt) answers in Tide's VM
+local newest, t = venue:latest(playerId)
+
+venue:setOwner(playerId, player.UserId) -- applied by Tide's VM at the start of its next frame
+venue:teleport(playerId, kickoffSpot)
+venue:markTeleport(playerId, spot)      -- for a move this VM makes itself
+```
+
+:::
+
+How it works: at the end of each frame Tide's VM copies the new history samples of linked entities into
+a `SharedTable` (registered as `"Tide:Venue1"`). The reader copies each sample once into its own ring
+and interpolates with the same code as `Tide.at`, so the same samples give the same answer. Intents go
+into a queue in the same `SharedTable`, applied in order at the start of Tide's next frame.
+
+Limits:
+
+- A reader sees samples up to one Tide frame later than `Tide.at` would.
+- Intents are applied a frame later, with no reply. Read the result back (`Tide.owner` in Tide's VM,
+  `venue:latest` here) instead of assuming it. Intents for keys not linked at that time are dropped and
+  counted (`linkUnknown`), as are ones that fail (`linkBad`).
+- Each mirrored sample costs one `SharedTable` write (a 73-byte string) plus one for the entity's
+  newest index; link only what other VMs read.
+- `SharedTable`'s cross-VM behaviour (atomic `increment`, what a parallel phase sees of writes made in
+  the serial phase) is taken from Roblox's documentation and has not been checked in Studio yet.

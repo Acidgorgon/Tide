@@ -101,6 +101,15 @@ last accepted sample covers the distance at `maxSpeed`.
 - **Leave:** the player's `"Player"` entity is removed. Any other entity the player owned (see
   [handing an entity to a player](/guide/entities#ownership)) goes back to the server.
 
+## Streaming
+
+With StreamingEnabled, a model may not have reached a client when its entity arrives; the client asks
+for it again every `Config.ModelRetry` (1 s) until it does. When Roblox streams a model **out**, the
+client's instance leaves the DataModel and a new instance arrives when it streams back in. By default
+(v0.3) Tide keeps driving the old instance. With `Config.rebindStreamed = true` (a server setting, sent
+to clients) a model whose `Parent` became `nil` is dropped (`Tide.removed` fires), asked for again, and
+the new instance is bound to the same entity without restarting its stream (`Tide.added` fires for it).
+
 ## Tuning the kind
 
 The built-in `"Player"` kind can be changed like any other, before `Tide.start()`:

@@ -5,6 +5,8 @@
 --   lo u32 = x:17 | y(low 15):15
 --   hi u32 = y(high 2):2 | z:17 | yaw:10 | flags:3
 -- x/y/z: 1/64 stud around Config.origin, offset binary (q + 65536), +-1024 studs.
+--        write/read/quantize take an optional origin (cx, cy, cz) instead: an entity's own
+--        (handle:setOrigin, v0.4). A NaN origin forces the absolute form.
 -- yaw:   1024 steps per turn.
 -- flags: bit0 TELEPORT, bit1 FULL (a 4 B smallest-three quaternion follows),
 --        bit2 ABS (core xyz bits are zero; 3 x f32 absolute position follows the quaternion).
@@ -151,12 +153,19 @@ function Codec.write(
 	qx: number,
 	qy: number,
 	qz: number,
-	qw: number
+	qw: number,
+	cx: number?,
+	cy: number?,
+	cz: number?
 ): number
 	flags = flags % 4 -- callers never set ABS themselves
-	local fx = round((x - ox) * SCALE)
-	local fy = round((y - oy) * SCALE)
-	local fz = round((z - oz) * SCALE)
+	local bx, by, bz = ox, oy, oz
+	if cx ~= nil then
+		bx, by, bz = cx, cy :: number, cz :: number
+	end
+	local fx = round((x - bx) * SCALE)
+	local fy = round((y - by) * SCALE)
+	local fz = round((z - bz) * SCALE)
 	local isAbs = false
 	-- (NaN fails every comparison and so lands in the absolute form)
 	if fx >= -LIMIT and fx < LIMIT and fy >= -LIMIT and fy < LIMIT and fz >= -LIMIT and fz < LIMIT then
@@ -193,7 +202,10 @@ end
 -- (identity placeholders when the FULL flag is not set).
 function Codec.read(
 	b: buffer,
-	off: number
+	off: number,
+	cx: number?,
+	cy: number?,
+	cz: number?
 ): (number, number, number, number, number, number, number, number, number, number)
 	local lo = readu32(b, off)
 	local hi = readu32(b, off + 4)
@@ -216,9 +228,13 @@ function Codec.read(
 		z = readf32(b, off + 8)
 		off += 12
 	else
-		x = (lo % 131072 - LIMIT) * INV_SCALE + ox
-		y = (lo // 131072 + (hi % 4) * 32768 - LIMIT) * INV_SCALE + oy
-		z = ((hi // 4) % 131072 - LIMIT) * INV_SCALE + oz
+		local bx, by, bz = ox, oy, oz
+		if cx ~= nil then
+			bx, by, bz = cx, cy :: number, cz :: number
+		end
+		x = (lo % 131072 - LIMIT) * INV_SCALE + bx
+		y = (lo // 131072 + (hi % 4) * 32768 - LIMIT) * INV_SCALE + by
+		z = ((hi // 4) % 131072 - LIMIT) * INV_SCALE + bz
 	end
 	return off, x, y, z, yaw, flags, qx, qy, qz, qw
 end
@@ -236,10 +252,13 @@ function Codec.quantize(
 	qx: number,
 	qy: number,
 	qz: number,
-	qw: number
+	qw: number,
+	cx: number?,
+	cy: number?,
+	cz: number?
 ): (number, number, number, number, number, number, number, number, number)
-	Codec.write(scratch, 0, x, y, z, yaw, flags, qx, qy, qz, qw)
-	local _, rx, ry, rz, ryaw, rflags, rqx, rqy, rqz, rqw = Codec.read(scratch, 0)
+	Codec.write(scratch, 0, x, y, z, yaw, flags, qx, qy, qz, qw, cx, cy, cz)
+	local _, rx, ry, rz, ryaw, rflags, rqx, rqy, rqz, rqw = Codec.read(scratch, 0, cx, cy, cz)
 	return rx, ry, rz, ryaw, rflags, rqx, rqy, rqz, rqw
 end
 
