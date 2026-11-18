@@ -88,7 +88,8 @@ venue:at(key, t) / venue:latest(key) / venue:setOwner(key, userId?) / venue:tele
 
 v0.4 additions are opt-in: a game that doesn't call them behaves and sends the same bytes as v0.3.
 v0.4.1 fixes models that never bound for a player coming into an entity's audience, or with more than
-64 models missing (StreamingEnabled).
+64 models missing (StreamingEnabled). v0.4.2: a client's `Tide.removed` no longer fires with a `nil` model for an
+entity whose model never bound or had already streamed out.
 
 Full reference: [API](https://acidgorgon.github.io/Tide/reference/api),
 [Config](https://acidgorgon.github.io/Tide/reference/config),

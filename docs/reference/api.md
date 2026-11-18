@@ -93,7 +93,8 @@ end)
 Tide.removed(fn: (model: Instance, kind: string) -> ()) -> Connection
 ```
 
-Calls `fn` when an entity is removed.
+Calls `fn` when an entity is removed. On a client it pairs with `Tide.added`: it fires once for each model that was
+bound, including when that model streams out (`rebindStreamed`), and never with a `nil` model.
 
 ### Tide.latest
 

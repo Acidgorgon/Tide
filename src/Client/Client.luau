@@ -255,7 +255,11 @@ local function removeEntity(slot: number)
 	State.blendIn[slot] = nil
 	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
 	State.lost[slot] = nil
-	Signal.fire(Client.removedSignal, model, kind and kind.name)
+	-- removed pairs with added: an entity whose model never arrived, or was already dropped (streamed out, which
+	-- fired removed then), has nothing to report. Firing with a nil model broke listeners keyed by model.
+	if model ~= nil then
+		Signal.fire(Client.removedSignal, model, kind and kind.name)
+	end
 end
 
 local function addEntity(slot: number, kind: any, model: any, ownerId: number)
