@@ -67,6 +67,16 @@ A function is called for each receiver every `Config.InterestEvery` (0.1 s), so 
 is counted in `errors` and means no. A player coming into an audience gets the entity like after a
 cull: its state snapshot, then its samples. An owner always uploads its entity, audience or not.
 
+Every player still learns that the entity exists (its ADD goes to everyone), so `Tide.added` and
+`Tide.owner` work the same for all. With StreamingEnabled, the model of an entity a player doesn't
+watch usually hasn't streamed in for it, and its client keeps asking for it (see
+[Streaming](/guide/players#streaming)); the server doesn't answer for entities outside the player's
+audience. When the player comes into the audience, the server sends it the entity's ADD again, so a
+model that has streamed in by then is bound at once (counted in `audienceAdds`), and one that arrives
+later is found by the client's next asks. On the mock, a spectator holding 110 bodies of 5 matches
+without their models, cutting to the match registered last, drew its 22 bodies within half a second
+(v0.4.0: never, once more than 64 unanswered entities came before them).
+
 On the mock, 4 matches of 22 bodies with 8 viewers each went from 70.9 KB/s per player (everyone gets
 everything) to 17.8 KB/s with each match's bodies limited to its viewers.
 

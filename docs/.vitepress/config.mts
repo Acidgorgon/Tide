@@ -19,7 +19,7 @@ export default defineConfig({
       { text: 'Benchmarks', link: '/benchmarks' },
       shared.nav,
       {
-        text: 'v0.4.0',
+        text: 'v0.4.1',
         items: [{ text: 'Releases', link: 'https://github.com/Acidgorgon/Tide/releases' }],
       },
     ],

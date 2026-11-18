@@ -335,3 +335,29 @@ same bytes (HELLO flags stay 0, protocol version stays 4, tags 17 and 18 only wh
   itself is bound again locally. RESEND replies are now rate limited on server time.
 - `Tide.owner(model)`, `Tide.isMine(model)`, `handle:owner()`: on the server "mine" is a registered
   server-owned entity; on a client, an entity this client owns and uploads.
+
+### v0.4.1: missing models behind audiences
+
+Found wiring FM onto audiences. Every ADD goes to every player, and a client asked again (RESEND) only
+for the FIRST 64 entities without a model, always in the same order, while the server does not answer
+for entities outside the receiver's audience. A hub player holds model-less entries for every watched
+venue's bodies (22 each); cutting to a venue registered after 64 or more of those, it never asked for
+its bodies and drew none, forever (FM mock: 0 / 22 with 3 or 4 other venues watched). Two fixes, no
+wire change (protocol 4, no new tag):
+
+- Server: when a receiver comes back into an entity's audience (`Relay.onAudienceEnter`), the entity's
+  ADD (and ORIGIN) goes to it again after the frame's broadcast (`audienceAdds`). A model already
+  streamed in is bound at once, without waiting for a RESEND.
+- Client: with more than 64 models missing, each RESEND takes the next 64 (a cursor over the missing
+  ones, wrapping around), so every missing model is asked for within `ceil(missing / 64)` asks. Up to
+  64 missing, the RESEND is byte for byte v0.4.0's (all of them, in list order).
+- Client: an ADD for an entity it already has, same kind and owner but without the model (not streamed
+  in for it), keeps the model it has instead of re-adding the entity. Only the new ADD can do that.
+
+Not done: leaving out the ADD for receivers outside the audience. Clients would then add and remove
+entities as audiences change (`Tide.added` / `removed` churn, `Tide.owner` and state `ref` fields
+unknown outside), and an audience is set after `Tide.add` has queued the ADD. A "not for you" reply was
+not needed either: the moving window bounds the cost of unanswered asks to 130 B per `ModelRetry`.
+The server sends the same bytes as v0.4.0 for entities without an audience, and the client's RESEND
+only differs with more than 64 models missing (where v0.4.0 starved). Tests: `tests/test_resend.luau`
+(5 venues x 22 bodies, a hub viewer cutting to the newest: 0 / 22 on v0.4.0, 22 / 22 within 0.5 s).

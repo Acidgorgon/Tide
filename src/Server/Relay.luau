@@ -16,7 +16,8 @@
 -- Boundaries have Config.Hysteresis studs of hysteresis.
 -- Distances are from the receiver's own "Player" entity, else its focus (Tide.focus), else
 -- where its character last was. An entity with an audience (handle:setAudience) is culled
--- for every receiver outside it (samples, animations and state alike).
+-- for every receiver outside it (samples, animations and state alike); a receiver coming
+-- back in gets the entity's ADD again (Server, v0.4.1).
 
 local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)
@@ -161,6 +162,9 @@ end
 Relay.onEnter = nil :: ((rx: any, slot: number) -> ())?
 -- Called when it becomes "culled" (also when an entity starts out culled).
 Relay.onLeave = nil :: ((rx: any, slot: number) -> ())?
+-- Called when the receiver comes back into the entity's audience (it may still be culled by
+-- distance): the server sends it the entity's ADD again, which it did not answer while outside.
+Relay.onAudienceEnter = nil :: ((rx: any, slot: number) -> ())?
 
 local function computeTier(rx: any, slot: number, has: boolean, px: number, py: number, pz: number)
 	local tiers = rx.tier
@@ -169,6 +173,7 @@ local function computeTier(rx: any, slot: number, has: boolean, px: number, py: 
 	local kind = kinds[slot]
 	local aud = audience[slot]
 	local outside = rx.outside
+	local wasOutside = outside[slot] == true
 	if aud ~= nil and not inAudience(rx, aud) then
 		new = 4
 		outside[slot] = true
@@ -177,7 +182,7 @@ local function computeTier(rx: any, slot: number, has: boolean, px: number, py: 
 		outside[slot] = nil
 	else
 		local cur = old
-		if outside[slot] then
+		if wasOutside then
 			outside[slot] = nil
 			cur = nil -- back in the audience: no hysteresis against the audience cull
 		end
@@ -189,6 +194,12 @@ local function computeTier(rx: any, slot: number, has: boolean, px: number, py: 
 		end
 	end
 	tiers[slot] = new
+	if wasOutside and outside[slot] == nil then
+		local hook = Relay.onAudienceEnter
+		if hook then
+			hook(rx, slot)
+		end
+	end
 	if old == 4 and new ~= 4 then
 		local hook = Relay.onEnter
 		if hook then

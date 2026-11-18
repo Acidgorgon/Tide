@@ -90,12 +90,14 @@ instances referenced by index (1-based; 0 = none).
 | 13 | TELEPORT | server → owner | `u16 slot, f32 x, y, z, qx, qy, qz, qw, u8 has velocity, [f32 vx, vy, vz]` |
 | 14 | HELLO | server → client | `u8 version, f64 origin x, y, z, u8 flags (bit 0 lock, bit 1 animations, bit 2 animations owner-local, bit 3 ownerEase, bits 4-5 ownerStart (0 drawn, 1 latest, 2 server), bit 6 rebindStreamed), u8 upload redundancy, u8 kind count`, then per kind: `u8 id, u8 name length, name, f32 rate, u8 flags (bit 0 full, bit 1 animations off, bit 2 state-only: motion = false), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise, f32 maxFall`; with animations on, then `u16 folder instance index, u16 folder id count, u32 folder checksum` |
 | 15 | READY | client → server | (none) |
-| 16 | RESEND | client → server | `u8 count, count × u16 slot` (models that haven't streamed in) |
+| 16 | RESEND | client → server | `u8 count, count × u16 slot` (models that haven't streamed in; at most 64 slots, in the client's list order; with more missing, each RESEND takes the next 64, wrapping around) |
 | 17 | OWNERPOSE | server → client | `u16 slot, f64 stamp, f32 x, y, z, qx, qy, qz, qw, f32 vx, vy, vz` (v0.4, `Config.ownerStart = "server"` only: in the same message right after an OWNER to a player; the new owner starts its copy there, carried to now; other clients ignore it) |
 | 18 | ORIGIN | server → client | `u16 slot, f64 x, y, z` (v0.4, `handle:setOrigin` only: the entity's quantization origin, after its ADD and on a change; `Config.origin` = back to the global one) |
 
 The protocol version is `4` (3: animations; 4: timeline state). v0.4 keeps it: its HELLO bits are 0
-and tags 17 and 18 are not sent unless a game turns those features on. A client that sees a different version
+and tags 17 and 18 are not sent unless a game turns those features on. v0.4.1 keeps it too: the server
+also sends an ADD (with its ORIGIN, if any) to a client coming back into an entity's audience, and a
+client that receives an ADD for an entity it has, without the model, keeps the model it has. A client that sees a different version
 warns in the output. With `Config.animations` off and no `Tide.state` declaration, no field or message
 below is sent and every byte above is as in version 2 (apart from the version byte).
 
