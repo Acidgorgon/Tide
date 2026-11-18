@@ -10,7 +10,8 @@
 --   13 TELEPORT u16 slot, f32 x, y, z, qx, qy, qz, qw, u8 has velocity, [f32 vx, vy, vz]
 --               (to the owner: move there, flag uploads for Config.TeleportAckTime)
 --   14 HELLO    u8 version, f64 origin x, y, z, u8 flags (bit0 lock, bit1 animations, bit2 animations
---               owner-local), u8 upload redundancy, u8 kind count,
+--               owner-local, bit3 ownerEase, bits4-5 ownerStart (0 drawn, 1 latest, 2 server),
+--               bit6 rebindStreamed), u8 upload redundancy, u8 kind count,
 --               per kind: u8 id, u8 name length, name, f32 rate, u8 flags (bit0 full, bit1 animations
 --               off for this kind, bit2 state-only: motion = false), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise,
 --               f32 maxFall,
@@ -24,6 +25,10 @@
 --   31 STATESNAP u16 slot, f64 t0, u8 n, n x (u8 field [bit7], value): values in effect at t0;
 --               u16 m, m x (u16 dt (0.5 ms after t0), u8 field [bit7], value): changes after t0
 --   32 SCHEMA   u8 kinds, kinds x schema (see Shared/StateSchema)
+--   v0.4, sent only when the feature is used (protocol stays 4):
+--   17 OWNERPOSE u16 slot, f64 stamp, f32 x, y, z, qx, qy, qz, qw, f32 vx, vy, vz
+--               (broadcast right after an OWNER to a player, Config.ownerStart = "server": the new owner
+--               starts its copy there, carried to now; everyone else ignores it)
 -- client -> server
 --   15 READY
 --   16 RESEND   u8 count, count x u16 slot   (models that did not arrive, e.g. streaming)
@@ -40,6 +45,7 @@ Control.TELEPORT = 13
 Control.HELLO = 14
 Control.READY = 15
 Control.RESEND = 16
+Control.OWNERPOSE = 17
 Control.ANIM_UP = 20
 Control.ANIM = 21
 Control.REGISTER = 22

@@ -55,6 +55,7 @@ local mine = State.mine
 local models = State.model
 local kinds = State.kind
 local srcs = State.src
+local lags = State.lag
 local ownerIds = State.ownerId
 local counters = State.counters
 
@@ -196,7 +197,7 @@ local function timeOf(slot: number, now: number): number
 			t = now - kind.buffer
 		else
 			local src = srcs[slot]
-			t = if src ~= nil then now - src.delay else now
+			t = if src ~= nil then now - (lags[slot] or src.delay) else now
 		end
 	end
 	local last = lastClock[slot] or -INF

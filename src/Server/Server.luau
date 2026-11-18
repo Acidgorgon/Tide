@@ -101,6 +101,15 @@ function Handle.setOwner(self: any, player: any)
 	end
 end
 
+-- The owning player, nil when server-owned (or removed).
+function Handle.owner(self: any): Player?
+	local slot = liveSlot(self)
+	if slot then
+		return State.owner[slot] or nil
+	end
+	return nil
+end
+
 function Handle.alive(self: any): boolean
 	return liveSlot(self) ~= nil
 end
@@ -150,6 +159,17 @@ local function writeHello(w: Control.Writer)
 		if Config.animationsOwnerLocal then
 			flags += 4
 		end
+	end
+	if Config.ownerEase then
+		flags += 8
+	end
+	if Config.ownerStart == "latest" then
+		flags += 16
+	elseif Config.ownerStart == "server" then
+		flags += 32
+	end
+	if Config.rebindStreamed then
+		flags += 64
 	end
 	Control.u8(w, flags)
 	Control.u8(w, math.clamp(Config.UploadRedundancy, 1, 2))
@@ -624,6 +644,36 @@ function Server.setOwner(slot: number, player: any?)
 	if old == (player or false) then
 		return
 	end
+	-- ownerStart = "server": the new owner starts from the server's pose (live for a
+	-- server-owned entity, else the newest accepted sample), carried to its arrival time
+	local pose: { number }? = nil
+	if player ~= nil and Config.ownerStart == "server" and State.kind[slot].motion ~= false then
+		local h = State.hist[slot]
+		local vx, vy, vz = Motion.velocity(slot)
+		local x, y, z, qx, qy, qz, qw, stamp
+		local model = State.model[slot]
+		if not old and model.Parent ~= nil then
+			local root = State.root[slot]
+			if root ~= nil and root.Parent == nil then
+				root = nil
+			end
+			local _yaw
+			x, y, z, _yaw, qx, qy, qz, qw = Rig.read(model, root, true)
+			stamp = now()
+		elseif h.n > 0 then
+			local p = h.last % h.cap + 1
+			x, y, z, stamp = h.x[p], h.y[p], h.z[p], h.t[p]
+			if h.full then
+				qx, qy, qz, qw = h.qx[p], h.qy[p], h.qz[p], h.qw[p]
+			else
+				local half = h.yaw[p] * 0.5
+				qx, qy, qz, qw = 0, math.sin(half), 0, math.cos(half)
+			end
+		end
+		if x ~= nil then
+			pose = { stamp, x, y, z, qx, qy, qz, qw, vx, vy, vz }
+		end
+	end
 	if old and State.charSlot[old] == slot then
 		State.charSlot[old] = nil
 	end
@@ -647,6 +697,16 @@ function Server.setOwner(slot: number, player: any?)
 	Control.u8(bcast, Control.OWNER)
 	Control.u16(bcast, slot)
 	Control.f64(bcast, if player then player.UserId else 0)
+	if pose ~= nil then
+		-- in the same broadcast, right after the OWNER (everyone else ignores it): the new
+		-- owner gets both at once, before its first upload
+		Control.u8(bcast, Control.OWNERPOSE)
+		Control.u16(bcast, slot)
+		Control.f64(bcast, pose[1])
+		for i = 2, 11 do
+			Control.f32(bcast, pose[i])
+		end
+	end
 	Anim.onOwner(slot, old)
 	StateLog.onOwner(slot, old)
 end
@@ -859,6 +919,16 @@ end
 
 function Server.timeOf(_target: any): number
 	return now()
+end
+
+function Server.owner(target: any): any
+	local slot = Server.slotOf(target)
+	return if slot then State.owner[slot] or nil else nil
+end
+
+function Server.isMine(target: any): boolean
+	local slot = Server.slotOf(target)
+	return slot ~= nil and State.owner[slot] == false
 end
 
 function Server.handleOf(target: any): any

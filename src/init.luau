@@ -18,6 +18,7 @@
 --   Tide.drawn(model)  Tide.delay(model)  Tide.velocity(model)  Tide.latest(model)
 --   Tide.sampleInfo(model, into?)          -- stream health: newest, count, age, interval, jitter, idle, ...
 -- both
+--   Tide.owner(model) -> Player?   Tide.isMine(model) -> boolean   (v0.4)
 --   Tide.added(fn(model, kindName, owner))  Tide.removed(fn(model, kindName))
 --   Tide.stats()  Tide.Config
 -- animations (Config.animations = true; game code keeps playing on the Animator as before)
@@ -76,6 +77,18 @@ end
 
 function Tide.latest(model: any): CFrame?
 	return Side.latest(model)
+end
+
+-- The player that owns (samples and uploads) an entity, nil when the server owns it or the
+-- entity is unknown. (v0.4)
+function Tide.owner(model: any): Player?
+	return Side.owner(model)
+end
+
+-- Is the entity sampled on this side: server, a registered server-owned entity; client, an
+-- entity this client owns and uploads (Tide does not draw it). (v0.4)
+function Tide.isMine(model: any): boolean
+	return Side.isMine(model)
 end
 
 function Tide.stats(): { [string]: number }

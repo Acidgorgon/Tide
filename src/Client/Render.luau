@@ -4,6 +4,9 @@
 -- PreRender: sample every remote entity at now - delay, blend corrections,
 -- apply (one BulkMoveTo for anchored roots, CFrame otherwise), then run the
 -- kinds' afterApply hooks (model, cf) once every pose of the frame is in place.
+-- After an owner change (Config.ownerEase) an entity keeps its own delay (State.lag) and
+-- eases it to its new source's at the source's rates (render clock 0.75x..1.1x, never a
+-- snap); the old owner's first draw blends from where its own copy stood (State.blendIn).
 
 local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)
@@ -34,6 +37,8 @@ local lastRT = State.lastRT
 local offX, offY, offZ, offYaw, offT = State.offX, State.offY, State.offZ, State.offYaw, State.offT
 local vX, vY, vZ = State.vX, State.vY, State.vZ
 local cfs = State.cf
+local lags = State.lag
+local blendIn = State.blendIn
 
 local bulkParts = table.create(64) :: { any }
 local bulkCFrames = table.create(64) :: { any }
@@ -84,7 +89,33 @@ function Render.step(now: number, dt: number)
 		end
 		local kind = kinds[slot]
 		local extrap = kind.extrapolate
-		local rt = now - srcs[slot].delay
+		local src = srcs[slot]
+		local delay = src.delay
+		local lag = lags[slot]
+		if lag ~= nil then
+			-- ease the entity's own delay to its source's (as Buffer.update, without snapping)
+			if src.started then
+				local diff = delay - lag
+				if diff < 1e-3 and diff > -1e-3 then
+					lags[slot] = nil
+				else
+					local step = diff * math.min(1, 5 * dt)
+					local up = 0.25 * dt
+					local down = -0.1 * dt
+					if step > up then
+						step = up
+					elseif step < down then
+						step = down
+					end
+					lag += step
+					lags[slot] = lag
+					delay = lag
+				end
+			else
+				delay = lag -- the new source has no measure yet: hold
+			end
+		end
+		local rt = now - delay
 		local minGap = 0.5 / kind.rate
 		local maxSpeed, maxRise, maxFall = kind.maxSpeed, kind.maxRise, kind.maxFall
 		local x, y, z, yaw, qx, qy, qz, qw = sample(r, rt, extrap, minGap, maxSpeed, maxRise, maxFall)
@@ -110,6 +141,21 @@ function Render.step(now: number, dt: number)
 					offYaw[slot] = wrapAngle(dYaw[slot] - pyaw)
 					offT[slot] = now - dt
 				end
+			end
+		elseif blendIn[slot] then
+			-- first draw after losing ownership: blend from where this client's copy stood
+			blendIn[slot] = nil
+			local ex = dX[slot] - x
+			local ey = dY[slot] - y
+			local ez = dZ[slot] - z
+			if ex * ex + ey * ey + ez * ez > snap2 then
+				offT[slot] = -math.huge
+			else
+				offX[slot] = ex
+				offY[slot] = ey
+				offZ[slot] = ez
+				offYaw[slot] = wrapAngle(dYaw[slot] - yaw)
+				offT[slot] = now
 			end
 		else
 			offT[slot] = -math.huge
