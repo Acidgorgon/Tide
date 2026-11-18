@@ -20,6 +20,12 @@ State.audience = {} :: { [number]: any } -- nil = every receiver; { [Player] = t
 State.sentT = {} :: { [number]: number } -- time of the last pushed sample
 State.heldT = {} :: { [number]: number } -- newest unchanged tick not pushed (0 = none)
 State.forceTele = {} :: { [number]: boolean } -- next sample carries the teleport flag
+-- handle:markTeleport(target): the first sample within TeleportGrantRadius of the target
+-- (until markUntil) carries the teleport flag
+State.markUntil = {} :: { [number]: number }
+State.markX = {} :: { [number]: number }
+State.markY = {} :: { [number]: number }
+State.markZ = {} :: { [number]: number }
 
 State.still = {} :: { [number]: boolean } -- a "stopped" sample (same pose twice) was pushed
 
@@ -78,6 +84,7 @@ State.counters = {
 	spacing = 0, -- uploaded samples closer than half an upload interval to the previous one
 	teleportWait = 0, -- owner uploads dropped while a server teleport is unacknowledged
 	teleportIgnored = 0,
+	teleportFlagged = 0, -- server-owned samples flagged by kind.teleportDistance or handle:markTeleport (v0.4)
 	inBytes = 0, -- payload bytes received from clients (both remotes, accepted or not)
 	inBytesPerSecond = 0, -- over the last full second
 	relayBytesPerSecond = 0,

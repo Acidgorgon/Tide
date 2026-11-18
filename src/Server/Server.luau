@@ -75,6 +75,18 @@ function Handle.teleport(self: any, cf: CFrame, velocity: Vector3?)
 	end
 end
 
+-- Flags a server-owned entity's jump as a teleport (receivers snap instead of sweeping)
+-- without moving it. No target: the entity is sampled now, flagged (call it after moving the
+-- model). A target (CFrame or Vector3): the first sample within Config.TeleportGrantRadius of
+-- it, in the next second, is flagged (for moves made elsewhere, e.g. another VM). Does nothing
+-- for client-owned entities (use teleport).
+function Handle.markTeleport(self: any, target: any)
+	local slot = liveSlot(self)
+	if slot then
+		Server.markTeleport(slot, target)
+	end
+end
+
 function Handle.remove(self: any)
 	local slot = liveSlot(self)
 	if slot then
@@ -388,6 +400,7 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	State.still[slot] = false
 	State.tpVel[slot] = nil
 	State.audience[slot] = nil
+	State.markUntil[slot] = nil
 	Receive.reset(slot, t)
 
 	State.count += 1
@@ -458,6 +471,7 @@ function Server.remove(slot: number)
 	State.conn[slot] = nil
 	State.tpVel[slot] = nil
 	State.audience[slot] = nil
+	State.markUntil[slot] = nil
 	State.freedAt[slot] = now()
 	for _, rx in State.rxList do
 		rx.tier[slot] = nil
@@ -545,6 +559,34 @@ function Server.teleport(slot: number, cf: CFrame, velocity: Vector3?)
 		State.forceTele[slot] = true
 		Ticker.sample(slot, math.max(t, Ring.newestT(State.hist[slot]) + 0.0005))
 	end
+end
+
+local MARK_WINDOW = 1.0 -- seconds a targeted markTeleport waits for the entity to arrive
+
+function Server.markTeleport(slot: number, target: any)
+	if State.index[slot] == nil or State.owner[slot] or State.kind[slot].motion == false then
+		return
+	end
+	local kind = typeof(target)
+	local t = now()
+	if target == nil then
+		State.forceTele[slot] = true
+		State.counters.teleportFlagged += 1
+		Ticker.sample(slot, math.max(t, Ring.newestT(State.hist[slot]) + 0.0005))
+		return
+	end
+	local p: Vector3
+	if kind == "CFrame" then
+		p = target.Position
+	elseif kind == "Vector3" then
+		p = target
+	else
+		error("markTeleport: target must be a CFrame, a Vector3 or nil", 3)
+	end
+	State.markX[slot], State.markY[slot], State.markZ[slot] = p.X, p.Y, p.Z
+	State.markUntil[slot] = t + MARK_WINDOW
+	-- it may already be there (moved earlier this frame)
+	Ticker.sample(slot, math.max(t, Ring.newestT(State.hist[slot]) + 0.0005))
 end
 
 -- Resends unacknowledged teleports every TeleportRetry; after TeleportTries

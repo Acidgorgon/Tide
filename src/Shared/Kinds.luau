@@ -23,6 +23,7 @@ export type Kind = {
 	keepAlive: number, -- idle keep-alive (s): server-owned samples and client uploads
 	animations: boolean, -- false: this kind's animations stay Roblox's (Config.animations opt-out)
 	motion: boolean, -- false: state-only entities (no samples, no relay, no apply; v0.3 timeline state)
+	teleportDistance: number, -- server-owned: a jump between two samples longer than this is flagged a teleport (v0.4)
 	-- runtime (server ticker)
 	acc: number,
 	tick: boolean,
@@ -53,6 +54,7 @@ local FIELDS = {
 	keepAlive = "number",
 	animations = "boolean",
 	motion = "boolean",
+	teleportDistance = "number",
 }
 
 local function newKind(name: string): Kind
@@ -76,6 +78,7 @@ local function newKind(name: string): Kind
 		keepAlive = 0.5,
 		animations = true,
 		motion = true,
+		teleportDistance = math.huge,
 		acc = 0,
 		tick = false,
 	}
@@ -116,6 +119,9 @@ local function applyOpts(kind: Kind, opts: { [string]: any }?)
 	kind.farEvery = math.max(1, math.floor(kind.farEvery))
 	kind.far = math.max(kind.far, kind.near)
 	kind.cull = math.max(kind.cull, kind.far)
+	if not (kind.teleportDistance > 0) then
+		error(`Tide.kind("{kind.name}"): teleportDistance must be a positive number`, 3)
+	end
 end
 
 -- Creates or updates a kind. Ids are assigned in definition order (server side).
