@@ -26,6 +26,9 @@ State.dirtyFrom = {} :: { [number]: number } -- earliest time whose drawn path n
 State.gapE = {} :: { [number]: number } -- expected sample gap (moving samples; kind-shared buffers measure need against it)
 State.lag = {} :: { [number]: number } -- ownerEase: this entity's own delay while it eases to its source's (nil = the source's)
 State.blendIn = {} :: { [number]: boolean } -- ownerEase: first draw after losing ownership blends from the local pose
+State.ox = {} :: { [number]: number } -- the entity's own quantization origin (ORIGIN; nil = the hello's)
+State.oy = {} :: { [number]: number }
+State.oz = {} :: { [number]: number }
 
 -- render
 State.drawn = {} :: { [number]: boolean }

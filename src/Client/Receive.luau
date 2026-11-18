@@ -44,6 +44,7 @@ local dirtyFrom = State.dirtyFrom
 local kinds = State.kind
 local gapE = State.gapE
 local counters = State.counters
+local oxs, oys, ozs = State.ox, State.oy, State.oz
 
 local packetId = 0
 
@@ -97,7 +98,7 @@ function Receive.packet(payload: any, arrival: number)
 		if pos + size > n then
 			break
 		end
-		local _, x, y, z, yaw, flags, qx, qy, qz, qw = read(b, pos)
+		local _, x, y, z, yaw, flags, qx, qy, qz, qw = read(b, pos, oxs[slot], oys[slot], ozs[slot])
 		pos += size
 		counters.records += 1
 

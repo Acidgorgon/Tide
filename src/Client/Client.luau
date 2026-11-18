@@ -215,6 +215,7 @@ local function removeEntity(slot: number)
 	State.mine[slot] = false
 	State.lag[slot] = nil
 	State.blendIn[slot] = nil
+	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
 	Signal.fire(Client.removedSignal, model, kind and kind.name)
 end
 
@@ -253,6 +254,7 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 	State.mine[slot] = false
 	State.lag[slot] = nil
 	State.blendIn[slot] = nil
+	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
 	State.count += 1
 	State.active[State.count] = slot
 	State.index[slot] = State.count
@@ -447,6 +449,20 @@ local function handleControl(payload: any, insts: any)
 				end
 				if isMine and not wasMine and State.ownerStart == "latest" and State.kind[slot].motion ~= false then
 					startLatest(slot)
+				end
+			end
+		elseif tag == Control.ORIGIN then
+			local slot = buffer.readu16(b, pos)
+			local x = buffer.readf64(b, pos + 2)
+			local y = buffer.readf64(b, pos + 10)
+			local z = buffer.readf64(b, pos + 18)
+			pos += 26
+			if State.index[slot] ~= nil then
+				local gx, gy, gz = Codec.getOrigin()
+				if x == gx and y == gy and z == gz then
+					State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+				else
+					State.ox[slot], State.oy[slot], State.oz[slot] = x, y, z
 				end
 			end
 		elseif tag == Control.OWNERPOSE then

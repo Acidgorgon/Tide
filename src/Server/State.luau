@@ -15,6 +15,13 @@ State.handle = {} :: { [number]: any }
 State.relayed = {} :: { [number]: number } -- last history index already relayed
 State.conn = {} :: { [number]: any } -- Destroying connection
 State.audience = {} :: { [number]: any } -- nil = every receiver; { [Player] = true } or fn(player) -> boolean
+-- per-entity quantization origin (handle:setOrigin; nil = Config.origin); records use the
+-- absolute form until originUntil (clients may not have the ORIGIN message yet)
+State.ox = {} :: { [number]: number }
+State.oy = {} :: { [number]: number }
+State.oz = {} :: { [number]: number }
+State.originUntil = {} :: { [number]: number }
+State.addFrame = {} :: { [number]: number } -- server frame of the entity's ADD
 
 -- server-owned sampler
 State.sentT = {} :: { [number]: number } -- time of the last pushed sample

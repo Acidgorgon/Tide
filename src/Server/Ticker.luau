@@ -32,6 +32,7 @@ local heldT = State.heldT
 local forceTele = State.forceTele
 local still = State.still
 local markUntil = State.markUntil
+local oxs, oys, ozs = State.ox, State.oy, State.oz
 local markX, markY, markZ = State.markX, State.markY, State.markZ
 local counters = State.counters
 
@@ -51,7 +52,7 @@ function Ticker.sample(slot: number, now: number)
 	end
 	local x, y, z, yaw, qx, qy, qz, qw = read(model, root, full)
 	local _fl
-	x, y, z, yaw, _fl, qx, qy, qz, qw = quantize(x, y, z, yaw, if full then 2 else 0, qx, qy, qz, qw)
+	x, y, z, yaw, _fl, qx, qy, qz, qw = quantize(x, y, z, yaw, if full then 2 else 0, qx, qy, qz, qw, oxs[slot], oys[slot], ozs[slot])
 	local p = h.last % h.cap + 1
 	local lastT = h.t[p]
 	if now <= lastT then

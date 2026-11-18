@@ -47,6 +47,8 @@ local hist = State.hist
 local kinds = State.kind
 local relayed = State.relayed
 local audience = State.audience
+local oxs, oys, ozs, originUntil = State.ox, State.oy, State.oz, State.originUntil
+local NAN = 0 / 0
 local counters = State.counters
 
 -- frame scratch
@@ -382,6 +384,17 @@ function Relay.step(now: number, dt: number)
 		local kind = kinds[slot]
 		local farEvery = kind.farEvery
 		local fullBit = if h.full then 2 else 0 -- the ring's own layout (a kind's rotation may change later)
+		-- the entity's own origin (nil: Config.origin); NaN = absolute form while clients may
+		-- not have its ORIGIN message yet
+		local cx, cy, cz = oxs[slot], oys[slot], ozs[slot]
+		local grace = originUntil[slot]
+		if grace ~= nil then
+			if now < grace then
+				cx, cy, cz = NAN, NAN, NAN
+			else
+				originUntil[slot] = nil
+			end
+		end
 		local ts, xs, ys, zs, yaws, fls = h.t, h.x, h.y, h.z, h.yaw, h.fl
 		entFirst[slot] = nrec + 1
 		ensureScratch(pos + (last - from + 1) * 32)
@@ -399,9 +412,9 @@ function Relay.step(now: number, dt: number)
 			pos = writeDt(scratch, pos, round((frameTime - ts[p]) / TICK))
 			local fl = fls[p]
 			if fullBit == 2 then
-				pos = write(scratch, pos, xs[p], ys[p], zs[p], yaws[p], fl + 2, h.qx[p], h.qy[p], h.qz[p], h.qw[p])
+				pos = write(scratch, pos, xs[p], ys[p], zs[p], yaws[p], fl + 2, h.qx[p], h.qy[p], h.qz[p], h.qw[p], cx, cy, cz)
 			else
-				pos = write(scratch, pos, xs[p], ys[p], zs[p], yaws[p], fl, 0, 0, 0, 1)
+				pos = write(scratch, pos, xs[p], ys[p], zs[p], yaws[p], fl, 0, 0, 0, 1, cx, cy, cz)
 			end
 			local keep = fl % 2 == 1 or li % farEvery == 0
 			if not keep and li > oldest then

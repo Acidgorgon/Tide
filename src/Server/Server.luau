@@ -87,6 +87,18 @@ function Handle.markTeleport(self: any, target: any)
 	end
 end
 
+-- Quantization origin of this entity (nil: Config.origin). Packed positions cover +-1024
+-- studs around it; give entities far from Config.origin (another arena, a far venue) one
+-- near them to keep the compact record. Set it in the frame of Tide.add (it travels with the
+-- ADD); a later change sends the entity's records in the absolute form for a second while
+-- clients get it.
+function Handle.setOrigin(self: any, origin: Vector3?)
+	local slot = liveSlot(self)
+	if slot then
+		Server.setOrigin(slot, origin)
+	end
+end
+
 function Handle.remove(self: any)
 	local slot = liveSlot(self)
 	if slot then
@@ -136,6 +148,15 @@ end
 -- Control messages
 --------------------------------------------------------------------------------
 
+local function writeOrigin(w: Control.Writer, slot: number)
+	local ox, oy, oz = Codec.getOrigin()
+	Control.u8(w, Control.ORIGIN)
+	Control.u16(w, slot)
+	Control.f64(w, State.ox[slot] or ox)
+	Control.f64(w, State.oy[slot] or oy)
+	Control.f64(w, State.oz[slot] or oz)
+end
+
 local function writeAdd(w: Control.Writer, slot: number)
 	local owner = State.owner[slot]
 	Control.u8(w, Control.ADD)
@@ -143,6 +164,9 @@ local function writeAdd(w: Control.Writer, slot: number)
 	Control.u8(w, State.kind[slot].id)
 	Control.u16(w, Control.inst(w, State.model[slot]))
 	Control.f64(w, if owner then owner.UserId else 0)
+	if State.ox[slot] ~= nil then
+		writeOrigin(w, slot)
+	end
 end
 
 local function writeHello(w: Control.Writer)
@@ -421,6 +445,9 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	State.tpVel[slot] = nil
 	State.audience[slot] = nil
 	State.markUntil[slot] = nil
+	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+	State.originUntil[slot] = nil
+	State.addFrame[slot] = frame
 	Receive.reset(slot, t)
 
 	State.count += 1
@@ -492,6 +519,8 @@ function Server.remove(slot: number)
 	State.tpVel[slot] = nil
 	State.audience[slot] = nil
 	State.markUntil[slot] = nil
+	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+	State.originUntil[slot] = nil
 	State.freedAt[slot] = now()
 	for _, rx in State.rxList do
 		rx.tier[slot] = nil
@@ -549,7 +578,8 @@ function Server.teleport(slot: number, cf: CFrame, velocity: Vector3?)
 		local full = State.hist[slot].full
 		local x, y, z, yaw, qx, qy, qz, qw = Rig.fromCFrame(cf, full)
 		local _fl
-		x, y, z, yaw, _fl, qx, qy, qz, qw = Codec.quantize(x, y, z, yaw, if full then 3 else 1, qx, qy, qz, qw)
+		x, y, z, yaw, _fl, qx, qy, qz, qw =
+			Codec.quantize(x, y, z, yaw, if full then 3 else 1, qx, qy, qz, qw, State.ox[slot], State.oy[slot], State.oz[slot])
 		local h = State.hist[slot]
 		local stamp = math.max(t, Ring.newestT(h) + 0.0005)
 		Ring.push(h, stamp, x, y, z, yaw, 1, qx, qy, qz, qw)
@@ -579,6 +609,38 @@ function Server.teleport(slot: number, cf: CFrame, velocity: Vector3?)
 		State.forceTele[slot] = true
 		Ticker.sample(slot, math.max(t, Ring.newestT(State.hist[slot]) + 0.0005))
 	end
+end
+
+local ORIGIN_GRACE = 1.0 -- seconds of absolute-form records after a later origin change
+
+function Server.setOrigin(slot: number, origin: Vector3?)
+	if State.index[slot] == nil then
+		return
+	end
+	assert(origin == nil or typeof(origin) == "Vector3", "setOrigin: a Vector3 or nil expected")
+	local gx, gy, gz = Codec.getOrigin()
+	local x, y, z
+	if origin ~= nil then
+		-- on Config.origin's 1/64 grid, so samples move between the two without rounding
+		x = gx + math.round((origin.X - gx) * 64) / 64
+		y = gy + math.round((origin.Y - gy) * 64) / 64
+		z = gz + math.round((origin.Z - gz) * 64) / 64
+		if x ~= x or y ~= y or z ~= z or math.abs(x) == math.huge or math.abs(y) == math.huge or math.abs(z) == math.huge then
+			error("setOrigin: origin must be finite", 3)
+		end
+		if x == gx and y == gy and z == gz then
+			x, y, z = nil, nil, nil
+		end
+	end
+	if x == State.ox[slot] and y == State.oy[slot] and z == State.oz[slot] then
+		return
+	end
+	State.ox[slot], State.oy[slot], State.oz[slot] = x, y, z
+	if State.addFrame[slot] ~= frame then
+		-- clients learnt the entity already: ORIGIN may land after records encoded for it
+		State.originUntil[slot] = now() + ORIGIN_GRACE
+	end
+	writeOrigin(bcast, slot)
 end
 
 local MARK_WINDOW = 1.0 -- seconds a targeted markTeleport waits for the entity to arrive

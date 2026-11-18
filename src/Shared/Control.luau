@@ -29,6 +29,8 @@
 --   17 OWNERPOSE u16 slot, f64 stamp, f32 x, y, z, qx, qy, qz, qw, f32 vx, vy, vz
 --               (broadcast right after an OWNER to a player, Config.ownerStart = "server": the new owner
 --               starts its copy there, carried to now; everyone else ignores it)
+--   18 ORIGIN   u16 slot, f64 x, y, z   (the entity's own quantization origin, handle:setOrigin;
+--               after its ADD; the global origin = back to Config.origin)
 -- client -> server
 --   15 READY
 --   16 RESEND   u8 count, count x u16 slot   (models that did not arrive, e.g. streaming)
@@ -46,6 +48,7 @@ Control.HELLO = 14
 Control.READY = 15
 Control.RESEND = 16
 Control.OWNERPOSE = 17
+Control.ORIGIN = 18
 Control.ANIM_UP = 20
 Control.ANIM = 21
 Control.REGISTER = 22
