@@ -6,6 +6,8 @@
 --                                          -- characters become kind "Player", owned by their player
 --   local bot = Tide.add(model, "Bot")     -- server-owned; returns a handle
 --   bot:teleport(cf, velocity?)  bot:remove()  bot:setOwner(player?)
+--   bot:setAudience(fn(player) -> boolean | { Player } | nil)   -- who receives it (v0.4)
+--   Tide.focus(player, part | model | Vector3 | nil)          -- interest without a character (v0.4)
 --   Tide.at(model, t)                      -- rewind: CFrame at server time t (what clients drew)
 --   Tide.latest(model)                     -- newest accepted sample
 --   Tide.velocity(model)                   -- from history
@@ -195,6 +197,12 @@ if IS_SERVER then
 
 	function Tide.at(target: any, t: number): CFrame?
 		return Side.at(target, t)
+	end
+
+	-- Interest centre for a player without a "Player" entity (spectating, watching a match):
+	-- a BasePart or Model (followed), a Vector3, or nil.
+	function Tide.focus(player: Player, target: any)
+		Side.focus(player, target)
 	end
 
 	function Tide.onSuspicious(fn: (player: Player, reason: string) -> ())

@@ -14,6 +14,9 @@
 --   3 far   (<= kind.cull)  as mid, and dropped first when the receiver is over budget
 --   4 culled                nothing
 -- Boundaries have Config.Hysteresis studs of hysteresis.
+-- Distances are from the receiver's own "Player" entity, else its focus (Tide.focus), else
+-- where its character last was. An entity with an audience (handle:setAudience) is culled
+-- for every receiver outside it (samples, animations and state alike).
 
 local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)
@@ -43,6 +46,7 @@ local owner = State.owner
 local hist = State.hist
 local kinds = State.kind
 local relayed = State.relayed
+local audience = State.audience
 local counters = State.counters
 
 -- frame scratch
@@ -100,12 +104,25 @@ local function tierFor(kind: any, d: number, cur: number?): number
 end
 Relay.tierFor = tierFor
 
--- Receiver position: newest sample of the receiver's own character entity, or
--- where it last was (dead, respawning). A receiver that never had a character
--- gets everything as "far" (thinned and within its byte budget).
+-- Receiver position: newest sample of the receiver's own character entity, else its focus
+-- (Tide.focus: a part, model or point), else where its character last was (dead,
+-- respawning). A receiver with none of them gets everything as "far" (thinned and within
+-- its byte budget).
 local function rxPosition(rx: any): (boolean, number, number, number)
 	local slot = State.charSlot[rx.player]
 	if slot == nil or State.index[slot] == nil then
+		local focus = rx.focus
+		if focus ~= nil then
+			if typeof(focus) == "Vector3" then
+				return true, focus.X, focus.Y, focus.Z
+			elseif focus.Parent ~= nil then
+				local p = if focus:IsA("BasePart") then focus.Position else focus:GetPivot().Position
+				rx.focusX, rx.focusY, rx.focusZ = p.X, p.Y, p.Z
+				return true, p.X, p.Y, p.Z
+			elseif rx.focusX ~= nil then
+				return true, rx.focusX, rx.focusY, rx.focusZ -- the focus part is gone: where it last was
+			end
+		end
 		local lx = rx.lastX
 		if lx ~= nil then
 			return true, lx, rx.lastY, rx.lastZ
@@ -119,6 +136,25 @@ local function rxPosition(rx: any): (boolean, number, number, number)
 	return true, x, y, z
 end
 
+-- Is the receiver in an audience: a { [Player] = true } set, or fn(player) -> truthy
+-- (called once per receiver per recompute for each distinct function; an error is "no").
+local function inAudience(rx: any, aud: any): boolean
+	if type(aud) == "function" then
+		local cache = rx.audCache
+		local v = cache[aud]
+		if v == nil then
+			local ok, res = pcall(aud, rx.player)
+			if not ok then
+				counters.errors += 1
+			end
+			v = ok and res ~= nil and res ~= false
+			cache[aud] = v
+		end
+		return v
+	end
+	return aud[rx.player] == true
+end
+
 -- Called when a receiver's tier for an entity leaves "culled" (animation channel, timeline state).
 Relay.onEnter = nil :: ((rx: any, slot: number) -> ())?
 -- Called when it becomes "culled" (also when an entity starts out culled).
@@ -129,13 +165,26 @@ local function computeTier(rx: any, slot: number, has: boolean, px: number, py: 
 	local old = tiers[slot]
 	local new = 3
 	local kind = kinds[slot]
-	if kind.motion == false then
+	local aud = audience[slot]
+	local outside = rx.outside
+	if aud ~= nil and not inAudience(rx, aud) then
+		new = 4
+		outside[slot] = true
+	elseif kind.motion == false then
 		new = 1 -- state-only: no position, never culled
-	elseif has then
-		local h = hist[slot]
-		local p = h.last % h.cap + 1
-		local dx, dy, dz = h.x[p] - px, h.y[p] - py, h.z[p] - pz
-		new = tierFor(kind, math.sqrt(dx * dx + dy * dy + dz * dz), old)
+		outside[slot] = nil
+	else
+		local cur = old
+		if outside[slot] then
+			outside[slot] = nil
+			cur = nil -- back in the audience: no hysteresis against the audience cull
+		end
+		if has then
+			local h = hist[slot]
+			local p = h.last % h.cap + 1
+			local dx, dy, dz = h.x[p] - px, h.y[p] - py, h.z[p] - pz
+			new = tierFor(kind, math.sqrt(dx * dx + dy * dy + dz * dz), cur)
+		end
 	end
 	tiers[slot] = new
 	if old == 4 and new ~= 4 then
@@ -155,6 +204,8 @@ end
 function Relay.onAdd(slot: number)
 	for _, rx in State.rxList do
 		rx.tier[slot] = nil
+		rx.outside[slot] = nil
+		table.clear(rx.audCache)
 		local has, px, py, pz = rxPosition(rx)
 		computeTier(rx, slot, has, px, py, pz)
 	end
@@ -163,22 +214,42 @@ end
 -- Receiver became ready: tiers for everything.
 function Relay.onReady(rx: any)
 	table.clear(rx.tier)
+	table.clear(rx.outside)
+	table.clear(rx.audCache)
 	local has, px, py, pz = rxPosition(rx)
 	for k = 1, State.count do
 		computeTier(rx, active[k], has, px, py, pz)
 	end
 end
 
+-- Tiers of one receiver for every entity it does not own.
+local function recomputeRx(rx: any)
+	table.clear(rx.audCache)
+	local has, px, py, pz = rxPosition(rx)
+	local me = rx.player
+	for k = 1, State.count do
+		local slot = active[k]
+		if owner[slot] ~= me then
+			computeTier(rx, slot, has, px, py, pz)
+		end
+	end
+end
+Relay.recomputeRx = recomputeRx
+
 local function recomputeInterest()
-	local count = State.count
 	for _, rx in State.rxList do
-		local has, px, py, pz = rxPosition(rx)
-		local me = rx.player
-		for k = 1, count do
-			local slot = active[k]
-			if owner[slot] ~= me then
-				computeTier(rx, slot, has, px, py, pz)
-			end
+		recomputeRx(rx)
+	end
+end
+
+-- An entity's audience changed: its tier for every receiver, now.
+function Relay.recomputeSlot(slot: number)
+	local me = owner[slot]
+	for _, rx in State.rxList do
+		if rx.player ~= me then
+			table.clear(rx.audCache)
+			local has, px, py, pz = rxPosition(rx)
+			computeTier(rx, slot, has, px, py, pz)
 		end
 	end
 end

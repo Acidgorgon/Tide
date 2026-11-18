@@ -373,6 +373,15 @@ function InstanceMT.__index(self, key)
 			return v
 		end
 	end
+	if key == "Position" then
+		local cf = rawget(self, "CFrame")
+		if cf == nil and shadow ~= nil then
+			cf = shadow.CFrame
+		end
+		if type(cf) == "table" and getmetatable(cf) == CFrameMT then
+			return cf.Position
+		end
+	end
 	local method = Instance[key]
 	if method ~= nil then
 		return method

@@ -14,6 +14,7 @@ State.hist = {} :: { [number]: any } -- Ring
 State.handle = {} :: { [number]: any }
 State.relayed = {} :: { [number]: number } -- last history index already relayed
 State.conn = {} :: { [number]: any } -- Destroying connection
+State.audience = {} :: { [number]: any } -- nil = every receiver; { [Player] = true } or fn(player) -> boolean
 
 -- server-owned sampler
 State.sentT = {} :: { [number]: number } -- time of the last pushed sample

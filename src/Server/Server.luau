@@ -93,6 +93,16 @@ function Handle.alive(self: any): boolean
 	return liveSlot(self) ~= nil
 end
 
+-- Who receives this entity: nil = every player (the default), a list (or set) of Players,
+-- or fn(player) -> boolean (asked every Config.InterestEvery). Receivers outside it get
+-- nothing of it (samples, animations, state), as if culled.
+function Handle.setAudience(self: any, audience: any)
+	local slot = liveSlot(self)
+	if slot then
+		Server.setAudience(slot, audience)
+	end
+end
+
 -- Slot of a model or handle (nil if not registered).
 function Server.slotOf(target: any): number?
 	if type(target) == "table" and getmetatable(target) == Handle then
@@ -377,6 +387,7 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	State.forceTele[slot] = false
 	State.still[slot] = false
 	State.tpVel[slot] = nil
+	State.audience[slot] = nil
 	Receive.reset(slot, t)
 
 	State.count += 1
@@ -446,9 +457,11 @@ function Server.remove(slot: number)
 	State.handle[slot] = nil
 	State.conn[slot] = nil
 	State.tpVel[slot] = nil
+	State.audience[slot] = nil
 	State.freedAt[slot] = now()
 	for _, rx in State.rxList do
 		rx.tier[slot] = nil
+		rx.outside[slot] = nil
 	end
 
 	Control.u8(bcast, Control.REMOVE)
@@ -594,6 +607,51 @@ function Server.setOwner(slot: number, player: any?)
 	Control.f64(bcast, if player then player.UserId else 0)
 	Anim.onOwner(slot, old)
 	StateLog.onOwner(slot, old)
+end
+
+function Server.setAudience(slot: number, audience: any)
+	if State.index[slot] == nil then
+		return
+	end
+	local value: any = nil
+	if type(audience) == "function" then
+		value = audience
+	elseif type(audience) == "table" then
+		local set = {}
+		for k, v in audience do
+			local player = if type(k) == "number" then v else k
+			if typeof(player) ~= "Instance" or not player:IsA("Player") then
+				error("setAudience: a list or set of Players expected", 3)
+			end
+			set[player] = true
+		end
+		value = table.freeze(set)
+	elseif audience ~= nil then
+		error("setAudience: expected a function, a list of Players or nil", 3)
+	end
+	State.audience[slot] = value
+	Relay.recomputeSlot(slot)
+end
+
+-- Interest centre of a player that has no "Player" entity (a spectator camera, a watched
+-- match): a BasePart or Model (followed), a Vector3, or nil (none). A character entity,
+-- while it exists, still wins.
+function Server.focus(player: any, target: any)
+	assert(typeof(player) == "Instance" and player:IsA("Player"), "Tide.focus: player expected")
+	local kind = typeof(target)
+	assert(
+		target == nil or kind == "Vector3" or (kind == "Instance" and (target:IsA("BasePart") or target:IsA("Model"))),
+		"Tide.focus: target must be a BasePart, a Model, a Vector3 or nil"
+	)
+	local rx = State.rx[player]
+	if rx == nil then
+		return
+	end
+	rx.focus = target
+	rx.focusX, rx.focusY, rx.focusZ = nil, nil, nil
+	if rx.ready then
+		Relay.recomputeRx(rx)
+	end
 end
 
 --------------------------------------------------------------------------------
@@ -792,6 +850,9 @@ local function onPlayerAdded(player: any)
 		player = player,
 		ready = false,
 		tier = {},
+		outside = {}, -- slots culled because the receiver is outside their audience
+		audCache = {}, -- audience function -> result, per recompute
+		focus = nil,
 		defer = {},
 		tokens = 0,
 		upTokens = Config.PlayerBytesPerSecond,
