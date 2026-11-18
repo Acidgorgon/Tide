@@ -183,6 +183,44 @@ local function setModel(slot: number, model: any)
 	end
 end
 
+-- rebindStreamed: the entity's model left the DataModel (streamed out). Forget it, keep the
+-- stream; retryModels asks for the entity again and the model that comes back (a new
+-- instance once re-streamed) is bound to the same slot.
+local function dropModel(slot: number)
+	local model = State.model[slot]
+	if model == nil then
+		return
+	end
+	restoreAnchor(slot)
+	if State.bySlotModel[model] == slot then
+		State.bySlotModel[model] = nil
+	end
+	State.lost[slot] = model
+	State.model[slot] = nil
+	State.root[slot] = nil
+	State.cf[slot] = nil
+	State.drawn[slot] = false
+	State.counters.modelsLost += 1
+	animUpdate(slot)
+	local kind = State.kind[slot]
+	Signal.fire(Client.removedSignal, model, kind and kind.name)
+end
+
+-- Binds a model to an entity that has none (late arrival, or after dropModel).
+local function attachModel(slot: number, model: any)
+	if State.lost[slot] ~= nil then
+		State.lost[slot] = nil
+		State.counters.modelsRebound += 1
+	end
+	setModel(slot, model)
+	if not State.mine[slot] then
+		anchorIfDriven(slot)
+	end
+	animUpdate(slot)
+	StateApply.onModel(slot)
+	Signal.fire(Client.addedSignal, model, State.kind[slot].name, ownerPlayer(State.ownerId[slot]))
+end
+
 local function removeEntity(slot: number)
 	local pos = State.index[slot]
 	if pos == nil then
@@ -216,6 +254,7 @@ local function removeEntity(slot: number)
 	State.lag[slot] = nil
 	State.blendIn[slot] = nil
 	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+	State.lost[slot] = nil
 	Signal.fire(Client.removedSignal, model, kind and kind.name)
 end
 
@@ -225,15 +264,13 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 		if same and State.model[slot] == model then
 			return -- repeated ADD (answer to an earlier resend)
 		end
+		local old = State.model[slot]
+		if same and old ~= nil and model ~= nil and State.rebindStreamed and old.Parent == nil then
+			dropModel(slot) -- a re-streamed model (new instance) replaces one that streamed out
+		end
 		if same and State.model[slot] == nil and model ~= nil then
 			-- model arrived late (streaming): attach it, keep the stream
-			setModel(slot, model)
-			if not State.mine[slot] then
-				anchorIfDriven(slot)
-			end
-			animUpdate(slot)
-			StateApply.onModel(slot)
-			Signal.fire(Client.addedSignal, model, kind.name, ownerPlayer(ownerId))
+			attachModel(slot, model)
 			return
 		end
 		removeEntity(slot)
@@ -255,6 +292,7 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 	State.lag[slot] = nil
 	State.blendIn[slot] = nil
 	State.ox[slot], State.oy[slot], State.oz[slot] = nil, nil, nil
+	State.lost[slot] = nil
 	State.count += 1
 	State.active[State.count] = slot
 	State.index[slot] = State.count
@@ -549,9 +587,22 @@ local function checkRoots(dt: number)
 		return
 	end
 	rootAcc = 0
+	local rebind = State.rebindStreamed
 	for k = 1, State.count do
 		local slot = State.active[k]
 		local model = State.model[slot]
+		if rebind then
+			if model ~= nil and model.Parent == nil then
+				dropModel(slot)
+				model = nil
+			elseif model == nil then
+				local lost = State.lost[slot]
+				if lost ~= nil and lost.Parent ~= nil then
+					attachModel(slot, lost) -- it came back as the same instance
+					model = lost
+				end
+			end
+		end
 		local root = State.root[slot]
 		if model ~= nil and (root == nil or root.Parent == nil) then
 			if root ~= nil then

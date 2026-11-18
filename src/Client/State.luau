@@ -29,6 +29,7 @@ State.blendIn = {} :: { [number]: boolean } -- ownerEase: first draw after losin
 State.ox = {} :: { [number]: number } -- the entity's own quantization origin (ORIGIN; nil = the hello's)
 State.oy = {} :: { [number]: number }
 State.oz = {} :: { [number]: number }
+State.lost = {} :: { [number]: any } -- rebindStreamed: the model that streamed out (Parent nil), until a model is bound again
 
 -- render
 State.drawn = {} :: { [number]: boolean }
@@ -106,6 +107,8 @@ State.counters = {
 	stateBad = 0, -- malformed state messages
 	stateClockErrors = 0, -- Tide.clock functions that errored or returned no number
 	stateMirrorErrors = 0, -- mirror attributes that could not be set
+	modelsLost = 0, -- rebindStreamed: models dropped because their Parent became nil (streamed out)
+	modelsRebound = 0, -- rebindStreamed: entities bound to a model again after one was dropped
 }
 
 -- The delay an entity is drawn at (its source's, or its own while easing after an owner change).

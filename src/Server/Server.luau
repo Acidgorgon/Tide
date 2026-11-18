@@ -283,7 +283,7 @@ local function onResend(player: any, rx: any, b: buffer, pos: number): number
 	if pos + count * 2 > n or count > 64 then
 		return n
 	end
-	local t = os.clock()
+	local t = now()
 	if t - (rx.resendT or -1) < 0.5 then
 		return pos + count * 2
 	end
@@ -291,7 +291,8 @@ local function onResend(player: any, rx: any, b: buffer, pos: number): number
 	local w = Control.writer(64)
 	for i = 0, count - 1 do
 		local slot = buffer.readu16(b, pos + i * 2)
-		if State.index[slot] ~= nil then
+		-- (not for entities whose audience leaves this receiver out: it gets nothing of them)
+		if State.index[slot] ~= nil and not rx.outside[slot] then
 			writeAdd(w, slot)
 		end
 	end
