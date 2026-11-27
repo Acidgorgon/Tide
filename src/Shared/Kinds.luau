@@ -24,6 +24,9 @@ export type Kind = {
 	animations: boolean, -- false: this kind's animations stay Roblox's (Config.animations opt-out)
 	motion: boolean, -- false: state-only entities (no samples, no relay, no apply; v0.3 timeline state)
 	teleportDistance: number, -- server-owned: a jump between two samples longer than this is flagged a teleport (v0.4)
+	velocity: boolean, -- server-owned: samples carry the root's linear velocity and spin (v0.5)
+	lock: boolean, -- server-owned: a non-replicated assembly root stops Roblox replicating the motion (v0.5, see Server/Lock)
+	onSample: any, -- false | (model, t, CFrame, velocity, spin, cut) -> (): each sample this client receives (client, v0.5)
 	-- runtime (server ticker)
 	acc: number,
 	tick: boolean,
@@ -55,6 +58,8 @@ local FIELDS = {
 	animations = "boolean",
 	motion = "boolean",
 	teleportDistance = "number",
+	velocity = "boolean",
+	lock = "boolean",
 }
 
 local function newKind(name: string): Kind
@@ -79,6 +84,9 @@ local function newKind(name: string): Kind
 		animations = true,
 		motion = true,
 		teleportDistance = math.huge,
+		velocity = false,
+		lock = false,
+		onSample = false,
 		acc = 0,
 		tick = false,
 	}
@@ -105,6 +113,11 @@ local function applyOpts(kind: Kind, opts: { [string]: any }?)
 				error(`Tide.kind("{kind.name}"): afterApply must be a function or false`, 3)
 			end
 			kind.afterApply = value
+		elseif key == "onSample" then
+			if value ~= false and type(value) ~= "function" then
+				error(`Tide.kind("{kind.name}"): onSample must be a function or false`, 3)
+			end
+			kind.onSample = value
 		else
 			error(`Tide.kind("{kind.name}"): unknown option {key}`, 3)
 		end
@@ -121,6 +134,9 @@ local function applyOpts(kind: Kind, opts: { [string]: any }?)
 	kind.cull = math.max(kind.cull, kind.far)
 	if not (kind.teleportDistance > 0) then
 		error(`Tide.kind("{kind.name}"): teleportDistance must be a positive number`, 3)
+	end
+	if kind.motion == false and (kind.velocity or kind.lock) then
+		error(`Tide.kind("{kind.name}"): velocity and lock need motion (motion = false is state-only)`, 3)
 	end
 end
 

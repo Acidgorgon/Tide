@@ -36,6 +36,13 @@ State.markZ = {} :: { [number]: number }
 
 State.still = {} :: { [number]: boolean } -- a "stopped" sample (same pose twice) was pushed
 
+-- Tide.bump (v0.5)
+State.forceCut = {} :: { [number]: boolean } -- the next sample is a cut (the motion changed abruptly)
+State.bumped = {} :: { [number]: boolean } -- bumped while physics was stepping: sampled at this frame's step
+State.bumpN = 0 -- entities in `bumped`
+State.inSim = false -- between PreSimulation and Tide's own step of the frame (poses are not final)
+State.frameT = 0 -- server time of Tide's last frame step (the time the poses that stand now were reached)
+
 -- pending server teleport of a client-owned entity (until the owner's flagged upload)
 State.tpPending = {} :: { [number]: boolean }
 State.tpX = {} :: { [number]: number }
@@ -119,6 +126,12 @@ State.counters = {
 	linkBad = 0, -- intents that failed (malformed, unknown op or player): dropped
 	-- audiences (v0.4.1)
 	audienceAdds = 0, -- ADDs sent again to receivers that came back into an entity's audience
+	-- velocity kinds and Tide.bump (v0.5)
+	velocitySamples = 0, -- samples of velocity kinds encoded for relay
+	velocityBytes = 0, -- bytes of their records sent to clients (part of relayBytes)
+	bumps = 0, -- Tide.bump calls that sampled at once
+	bumpsDeferred = 0, -- Tide.bump calls made while physics was stepping (sampled at that frame's step)
+	serverLocks = 0, -- server-owned entities given a lock (kind option lock)
 }
 
 State.onSuspicious = nil :: ((player: any, reason: string) -> ())?

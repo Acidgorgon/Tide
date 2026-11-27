@@ -24,6 +24,7 @@ local nlinked = 0
 Mirror.apply = nil :: ((op: string, slot: number, intent: any) -> ())?
 
 local packSample = Link.packSample
+local packSampleVel = Link.packSampleVel
 local STALL = 30 -- frames an index handed out but never written holds the queue, then skipped
 
 function Mirror.unlink(slot: number)
@@ -60,7 +61,11 @@ function Mirror.link(slot: number, name: string, key: any)
 	end
 	local h = State.hist[slot]
 	gen += 1
-	local e = SharedTable.new({ gen = gen, cap = h.cap, full = h.full, last = 0 })
+	local init: { [string]: any } = { gen = gen, cap = h.cap, full = h.full, last = 0 }
+	if h.vel then
+		init.vel = true
+	end
+	local e = SharedTable.new(init)
 	rec.h[key] = e
 	rec.byKey[key] = slot
 	linkOf[slot] = rec
@@ -92,6 +97,30 @@ function Mirror.write()
 		local cap = h.cap
 		local full = h.full
 		local ts, xs, ys, zs, yaws, fls = h.t, h.x, h.y, h.z, h.yaw, h.fl
+		if h.vel then
+			for i = from, last do
+				local p = i % cap + 1
+				e[p] = packSampleVel(
+					ts[p],
+					xs[p],
+					ys[p],
+					zs[p],
+					yaws[p],
+					fls[p],
+					if full then h.qx[p] else 0,
+					if full then h.qy[p] else 0,
+					if full then h.qz[p] else 0,
+					if full then h.qw[p] else 1,
+					h.vx[p],
+					h.vy[p],
+					h.vz[p],
+					h.wx[p],
+					h.wy[p],
+					h.wz[p]
+				)
+			end
+			from = last + 1
+		end
 		for i = from, last do
 			local p = i % cap + 1
 			e[p] = packSample(

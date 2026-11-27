@@ -49,6 +49,7 @@ local TICK = StateSchema.TICK
 local INF = math.huge
 local REF = StateSchema.CODES.ref
 local TIME = StateSchema.CODES.time
+local STRUCT = StateSchema.STRUCT
 local TO_ALL, TO_OWNER, TO_OTHERS, TO_SERVER =
 	StateSchema.TO_ALL, StateSchema.TO_OWNER, StateSchema.TO_OTHERS, StateSchema.TO_SERVER
 
@@ -210,8 +211,33 @@ end
 
 -- Ref values are models; a ref to an entity that is gone reads nil.
 local function live(f: Field, v: any): any
-	if f.code == REF and v ~= nil and bySlotModel[v] == nil then
+	if v == nil then
 		return nil
+	end
+	local code = f.code
+	if code == REF then
+		if bySlotModel[v] == nil then
+			return nil
+		end
+	elseif code == STRUCT then
+		-- a payload with members: ref members whose entity is gone read nil (a copy; the
+		-- stored payload is frozen)
+		local refMembers = f.refMembers
+		if refMembers ~= nil then
+			for _, m in refMembers do
+				local mv = v[m.name]
+				if mv ~= nil and bySlotModel[mv] == nil then
+					local copy = table.clone(v)
+					for _, m2 in refMembers do
+						local mv2 = copy[m2.name]
+						if mv2 ~= nil and bySlotModel[mv2] == nil then
+							copy[m2.name] = nil
+						end
+					end
+					return table.freeze(copy)
+				end
+			end
+		end
 	end
 	return v
 end
@@ -546,6 +572,12 @@ function StateLog.fire(slot: number, name: string, payload: any, stamp: number?)
 		error(`Tide.fire: {name} is not an event field`, 4)
 	end
 	local pf = f.payloadField
+	if pf ~= nil and pf.code == STRUCT then
+		-- named members: time members are quantized against the fire's own stamp
+		local t = stampFor(stamp)
+		record(slot, f, t, StateSchema.checkStruct(f, payload, 5, t, refModel))
+		return
+	end
 	if pf ~= nil and pf.code == REF then
 		payload = refModel(payload)
 	else
@@ -666,6 +698,10 @@ local function writeField(w: Control.Writer, f: Field, value: any, stamp: number
 			return
 		end
 		Control.u8(w, f.id)
+		if code == STRUCT then
+			StateSchema.writeStruct(w, ensure, pf, value, stamp, bySlotModel)
+			return
+		end
 		writeValue(w, ensure, code, pf, if value == nil then pf.default else value, stamp)
 		return
 	end

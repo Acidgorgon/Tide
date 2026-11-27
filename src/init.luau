@@ -36,6 +36,19 @@
 --   client: Tide.get(model, field) (as drawn)  Tide.peek(model, field)  Tide.timeOf(model)
 --           Tide.clock(model, fn(now) -> serverTime)   (entities game code draws, e.g. the ball)
 --   both:   Tide.changed(model, field, fn(value, old, t))  Tide.stateChanged(fn(model, field, value, old, t))
+--   v0.5: field / payload types "vector" and "cframe"; event payloads with named members
+--         (payload = { Position = "pos", Velocity = "vector", By = "ref" }).
+-- physics bodies the server simulates (a ball, a projectile), v0.5
+--   Tide.kind("Ball", { velocity = true, rotation = "full", rate = 30, apply = "none", lock = true })
+--     velocity = true   every sample carries the body's linear velocity and spin
+--     apply = "none"    Tide does not move the model on clients: game code draws it
+--     lock = true       Roblox stops replicating the body's motion (Tide's stream is the only one)
+--   server: Tide.bump(model) -> stamp     -- sample now, out of tick (after a kick): a "cut"
+--           Tide.at(model, t) -> CFrame, velocity, spin     Tide.latest(model) -> CFrame, velocity, spin, stamp
+--   client: Tide.latest(model) -> CFrame, velocity, spin, stamp   (newest received sample)
+--           Tide.at(model, t, extrapolate?) -> CFrame, velocity, spin   (the buffered path at server time t)
+--           Tide.kind("Ball", { onSample = function(model, t, cframe, velocity, spin, cut) end })
+--           Tide.timeOf(body) is the clock a body is drawn at: Tide.at(ball, Tide.timeOf(body))
 
 local RunService = game:GetService("RunService")
 
@@ -78,7 +91,10 @@ function Tide.removed(fn: (model: Instance, kind: string) -> ())
 	return Signal.connect(Side.removedSignal, fn)
 end
 
-function Tide.latest(model: any): CFrame?
+-- Newest sample of an entity (server: accepted; client: received, no buffering delay). Kinds
+-- with velocity = true (v0.5): also its linear velocity (studs/s), its spin (rad/s) and its
+-- server time; other kinds return the CFrame alone.
+function Tide.latest(model: any): (CFrame?, Vector3?, Vector3?, number?)
 	return Side.latest(model)
 end
 
@@ -141,6 +157,11 @@ end
 
 -- The server time an entity is at: the server's now on the server; on a client the time its
 -- body (and state) is drawn at. Compare "until" times against this, not GetServerTimeNow().
+-- Client, precisely: now for an entity this client owns; else the function given to
+-- Tide.clock(model, fn); else now - Tide.delay(model), the delay of the stream the entity is
+-- buffered with (its own for an entity another client owns, one per kind for server-owned
+-- entities). Never goes back. Each body has its own clock: to place a ball next to a body,
+-- read the ball at the body's time, Tide.at(ball, Tide.timeOf(body)).
 function Tide.timeOf(model: any): number
 	return Side.timeOf(model)
 end
@@ -211,8 +232,20 @@ if IS_SERVER then
 		return Side.handleOf(model)
 	end
 
-	function Tide.at(target: any, t: number): CFrame?
+	-- Rewind: the CFrame at server time t from history (what clients interpolate). Kinds with
+	-- velocity = true (v0.5): also the velocity and the spin of the path at t.
+	function Tide.at(target: any, t: number): (CFrame?, Vector3?, Vector3?)
 		return Side.at(target, t)
+	end
+
+	-- Samples a server-owned entity now, out of tick, after game code changed its motion
+	-- abruptly (a kick, a catch, a bounce the game resolved): receivers get the new pose and
+	-- velocity with this frame's packet, and for kinds with velocity = true the sample is a
+	-- cut (no curve across it). Returns the sample's server time (a stamp for Tide.fire /
+	-- Tide.set of the same moment); nil for entities that are not server-owned motion
+	-- entities. See Server.bump for the timing rules. (v0.5)
+	function Tide.bump(target: any): number?
+		return Side.bump(target)
 	end
 
 	-- Interest centre for a player without a "Player" entity (spectating, watching a match):
@@ -242,8 +275,17 @@ else
 		return Side.velocity(model)
 	end
 
-	function Tide.at(model: Instance, t: number): CFrame?
-		return Side.at(model, t)
+	-- The pose at server time t on the path this client has received (what Tide draws at t).
+	-- Kinds with velocity = true (v0.5): also the velocity and the spin of the path at t. Past
+	-- the newest sample the pose holds; with `extrapolate` (seconds) it continues at that
+	-- sample's velocity for at most that long.
+	function Tide.at(model: Instance, t: number, extrapolate: number?): (CFrame?, Vector3?, Vector3?)
+		return Side.at(model, t, extrapolate)
+	end
+
+	-- Server only (nil here, so shared code may call it).
+	function Tide.bump(_model: any): number?
+		return nil
 	end
 
 	function Tide.sampleInfo(model: Instance, into: { [string]: any }?): { [string]: any }?
@@ -256,7 +298,9 @@ else
 	end
 
 	-- Supplies the clock an entity's state applies at, for entities game code draws itself
-	-- (e.g. a ball drawn at its own lead): fn(now) -> server time. nil removes it.
+	-- (e.g. a ball drawn at its own lead): fn(now) -> server time. nil removes it. The function
+	-- is the entity's Tide.timeOf from then on (kept monotonic); it does not change what
+	-- Tide.at / Tide.latest answer, nor where Tide draws a model it moves itself.
 	function Tide.clock(model: any, fn: ((now: number) -> number)?)
 		Side.clock(model, fn)
 	end

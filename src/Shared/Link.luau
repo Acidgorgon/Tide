@@ -12,11 +12,15 @@
 --                 venue:has(key) -> boolean
 --                 venue:setOwner(key, userId?)   -- intents, applied by the Tide VM at the start
 --                 venue:teleport(key, cf, vel?)  -- of its next frame (handle:setOwner / teleport /
---                 venue:markTeleport(key, at?)   -- markTeleport); no reply, never synchronous
+--                 venue:markTeleport(key, at?)   -- markTeleport / bump); no reply, never
+--                 venue:bump(key)                -- synchronous
+-- Entities of a kind with velocity = true (v0.5): venue:at(key, t) also returns the velocity
+-- and the spin of the path at t, venue:latest(key) the newest sample's after its time.
 --
 -- Layout of the link's SharedTable:
---   h        key -> entity: gen (link generation), cap, full, last (newest logical index),
---            [i % cap + 1] = sample i packed with string.pack(SAMPLE)
+--   h        key -> entity: gen (link generation), cap, full, vel (velocity ring, else absent),
+--            last (newest logical index),
+--            [i % cap + 1] = sample i packed with string.pack(SAMPLE) (SAMPLE_VEL when vel)
 --   q        intent queue: n (indices handed out), [i] = { op, key, ... } (SharedTables)
 --   snapGap  the Tide VM's Config.SnapGap (Interp reads it)
 -- The Tide VM writes new samples at the end of its frame and appends only (server history is
@@ -37,10 +41,12 @@ local Link = {}
 
 Link.PREFIX = "Tide:"
 Link.SAMPLE = "<dddddBdddd" -- t, x, y, z, yaw, flags, qx, qy, qz, qw
+Link.SAMPLE_VEL = "<dddddBdddddddddd" -- ... then vx, vy, vz, wx, wy, wz (velocity rings, v0.5)
 
 local pack = string.pack
 local unpack = string.unpack
 local SAMPLE = Link.SAMPLE
+local SAMPLE_VEL = Link.SAMPLE_VEL
 
 local function registry(): any
 	return game:GetService("SharedTableRegistry")
@@ -66,6 +72,27 @@ end
 
 function Link.packSample(t: number, x: number, y: number, z: number, yaw: number, fl: number, qx: number, qy: number, qz: number, qw: number): string
 	return pack(SAMPLE, t, x, y, z, yaw, fl, qx, qy, qz, qw)
+end
+
+function Link.packSampleVel(
+	t: number,
+	x: number,
+	y: number,
+	z: number,
+	yaw: number,
+	fl: number,
+	qx: number,
+	qy: number,
+	qz: number,
+	qw: number,
+	vx: number,
+	vy: number,
+	vz: number,
+	wx: number,
+	wy: number,
+	wz: number
+): string
+	return pack(SAMPLE_VEL, t, x, y, z, yaw, fl, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz)
 end
 
 --------------------------------------------------------------------------------
@@ -95,7 +122,7 @@ local function sync(self: View, key: any): Ring.Ring?
 	local gen = e.gen
 	local c = self.cache[key]
 	if c == nil or c.gen ~= gen then
-		c = { gen = gen, last = 0, ring = Ring.new(e.cap, e.full) }
+		c = { gen = gen, last = 0, ring = Ring.new(e.cap, e.full, e.vel == true) }
 		self.cache[key] = c
 	end
 	local last = e.last
@@ -109,8 +136,16 @@ local function sync(self: View, key: any): Ring.Ring?
 			if type(s) ~= "string" then
 				break
 			end
-			local t, x, y, z, yaw, fl, qx, qy, qz, qw = unpack(SAMPLE, s)
-			Ring.push(r, t, x, y, z, yaw, fl, qx, qy, qz, qw)
+			if r.vel then
+				if #s < 121 then
+					break -- not a velocity sample: wait for the writer
+				end
+				local t, x, y, z, yaw, fl, qx, qy, qz, qw, vx, vy, vz, wx, wy, wz = unpack(SAMPLE_VEL, s)
+				Ring.setVel(r, Ring.push(r, t, x, y, z, yaw, fl, qx, qy, qz, qw), vx, vy, vz, wx, wy, wz)
+			else
+				local t, x, y, z, yaw, fl, qx, qy, qz, qw = unpack(SAMPLE, s)
+				Ring.push(r, t, x, y, z, yaw, fl, qx, qy, qz, qw)
+			end
 			copied = i
 		end
 		c.last = copied
@@ -122,8 +157,9 @@ function View.has(self: View, key: any): boolean
 	return self.h[key] ~= nil
 end
 
--- The pose at server time t, as Tide.at answers it in the Tide VM. nil for unknown keys.
-function View.at(self: View, key: any, t: number): CFrame?
+-- The pose at server time t, as Tide.at answers it in the Tide VM (velocity kinds: with the
+-- velocity and the spin of the path at t). nil for unknown keys.
+function View.at(self: View, key: any, t: number): (CFrame?, Vector3?, Vector3?)
 	local r = sync(self, key)
 	if r == nil then
 		return nil
@@ -136,11 +172,16 @@ function View.at(self: View, key: any, t: number): CFrame?
 	if state == Interp.STATE_EMPTY then
 		return nil
 	end
-	return Rig.cframe(x, y, z, yaw, r.full, qx, qy, qz, qw)
+	local cf = Rig.cframe(x, y, z, yaw, r.full, qx, qy, qz, qw)
+	if r.vel then
+		local m = Interp.motion
+		return cf, Vector3.new(m[1], m[2], m[3]), Vector3.new(m[4], m[5], m[6])
+	end
+	return cf
 end
 
--- The newest mirrored sample and its server time.
-function View.latest(self: View, key: any): (CFrame?, number?)
+-- The newest mirrored sample and its server time (velocity kinds: then its velocity and spin).
+function View.latest(self: View, key: any): (CFrame?, number?, Vector3?, Vector3?)
 	local r = sync(self, key)
 	if r == nil or r.n == 0 then
 		return nil, nil
@@ -158,6 +199,9 @@ function View.latest(self: View, key: any): (CFrame?, number?)
 		if full then r.qz[p] else 0,
 		if full then r.qw[p] else 1
 	)
+	if r.vel then
+		return cf, r.t[p], Vector3.new(r.vx[p], r.vy[p], r.vz[p]), Vector3.new(r.wx[p], r.wy[p], r.wz[p])
+	end
 	return cf, r.t[p]
 end
 
@@ -200,6 +244,14 @@ function View.markTeleport(self: View, key: any, target: any)
 		intent.x, intent.y, intent.z = p.X, p.Y, p.Z
 	end
 	push(self, intent)
+end
+
+-- Tide.bump in the Tide VM (v0.5): the entity is sampled out of tick when the intent is read
+-- (the start of the Tide VM's next frame), marked a cut for velocity kinds. Call it after this
+-- VM changed the body's motion abruptly (a kick).
+function View.bump(self: View, key: any)
+	checkKey(key)
+	push(self, { op = "bump", key = key })
 end
 
 return Link

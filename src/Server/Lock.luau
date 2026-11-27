@@ -1,7 +1,8 @@
 --!strict
--- Lock (client-owned entities): stops Roblox from replicating the character's
+-- Lock: stops Roblox from replicating the character's
 -- position so the only position stream is Tide's, and keeps the server's copy
 -- on the newest accepted sample (server-side hit boxes / touches see Tide's timeline).
+-- This part is for client-owned entities; server-owned ones (kind option lock) are at the end.
 --
 -- Config.lockMode
 --   "root" (default): a Camera is parented INSIDE the root part (a Camera's
@@ -178,6 +179,92 @@ function Lock.unlock(slot: number)
 			end
 		end
 	end
+end
+
+--------------------------------------------------------------------------------
+-- Server-owned entities (kind option lock = true, v0.5)
+--------------------------------------------------------------------------------
+-- The same non-replicated assembly root, for a body the SERVER simulates (a ball): Roblox
+-- stops replicating the assembly's motion, so Tide's samples are the only position stream
+-- clients get. The server keeps simulating the body as before (the locker has no size, no
+-- collisions and next to no mass); nothing here moves it, and Lock.step skips these entities.
+-- An unanchored root is given to the server for good (SetNetworkOwner(nil)): a client must
+-- never simulate an assembly whose root it cannot see.
+--
+-- VERIFY IN STUDIO (server + two clients, the body rolling, kicked and resting):
+--   1. Clients get no native motion for the body: with Tide's kind set to apply = "none" and
+--      nothing else drawing, the client's copy of the part stays where it was (it does not
+--      follow the server), while Tide.latest(body) keeps moving.
+--   2. The server's simulation is unchanged: same rest height, bounce, roll distance and
+--      mass (root.AssemblyMass within 0.001 of the value without the lock).
+--   3. No TideLock Camera / TideLocker / TideWeld under the part on any client.
+--   4. root:GetNetworkOwner() stays nil on the server through play (auto-ownership never
+--      hands the assembly to a nearby player).
+--   5. Server-side Touched and spatial queries against the body still fire and hit.
+--   6. Welds or constraints the game adds to the body later (a carry weld to a character
+--      that is itself locked): which part ends up the assembly root, and that the carried
+--      body still does not replicate natively.
+--   7. The client's stale copy of the part: characters simulated on clients collide with it
+--      where it stands. Turn its collisions off on clients, or move the copy yourself
+--      (apply = "cframe" does: Tide anchors and moves it).
+--   8. An anchored body moved by CFrame on the server: whether those CFrame writes still
+--      replicate with the locker in place (expected: yes, property replication of the root
+--      part itself; the lock only stops physics replication).
+--   9. Streaming: the body streams in and out normally; a client that streams it in sees it
+--      at the pose the server last replicated natively (stale) until Tide draws it.
+local sLocker = {} :: { [number]: any }
+local sWeld = {} :: { [number]: any }
+local sHolder = {} :: { [number]: any }
+
+function Lock.lockServer(slot: number)
+	local root = State.root[slot]
+	if root == nil or sLocker[slot] ~= nil or locker[slot] ~= nil then
+		return
+	end
+	if not root.Anchored then
+		pcall(function()
+			root:SetNetworkOwner(nil)
+		end)
+	end
+	local part = newLocker(root, false)
+	local w = Instance.new("Weld")
+	w.Name = "TideWeld"
+	w.Part0 = part
+	w.Part1 = root
+	local camera = Instance.new("Camera")
+	camera.Name = "TideLock"
+	camera.Archivable = false
+	camera.Parent = root
+	part.Parent = camera
+	w.Parent = camera
+	sLocker[slot] = part
+	sWeld[slot] = w
+	sHolder[slot] = camera
+	State.counters.serverLocks += 1
+end
+
+function Lock.unlockServer(slot: number)
+	local part = sLocker[slot]
+	if part == nil then
+		return
+	end
+	local w = sWeld[slot]
+	local camera = sHolder[slot]
+	sLocker[slot] = nil
+	sWeld[slot] = nil
+	sHolder[slot] = nil
+	if w ~= nil then
+		w:Destroy()
+	end
+	part:Destroy()
+	if camera ~= nil then
+		camera:Destroy()
+	end
+end
+
+-- Is the server-owned entity locked (tests, diagnostics).
+function Lock.serverLocked(slot: number): boolean
+	return sLocker[slot] ~= nil
 end
 
 -- Moves every locker whose entity got a new sample ("root": CFrame set;

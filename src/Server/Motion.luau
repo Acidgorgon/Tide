@@ -5,6 +5,8 @@
 -- sample at least WINDOW older, never across a teleport or an idle/long gap.
 -- Zero when the newest sample repeats the previous pose (the entity stopped).
 -- Numbers only (no allocation); Tide.velocity and the lock use it.
+-- Entities of a kind with velocity = true (v0.5) carry their velocity in every sample: the
+-- newest sample's is returned as it is.
 
 local Shared = script.Parent.Parent.Shared
 local Interp = require(Shared.Interp)
@@ -30,6 +32,10 @@ function Motion.velocity(slot: number): (number, number, number, number, number,
 	local cap = h.cap
 	local last = h.last
 	local p = last % cap + 1
+	if h.vel then
+		-- kinds with velocity = true: the newest sample's own velocity and spin
+		return h.vx[p], h.vy[p], h.vz[p], h.wx[p], h.wy[p], h.wz[p]
+	end
 	local ts, fls = h.t, h.fl
 	if fls[p] % 2 == 1 then
 		local v = tpVel[slot]

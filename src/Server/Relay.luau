@@ -7,6 +7,10 @@
 -- Packet (server -> client, "TideU"):
 --   u8 tag = 1 | u8 flags (bit0 wide slots) | f64 frameTime
 --   records: slot u8|u16, dt u8 (255 -> u16) in 0.5 ms before frameTime, sample
+--   velocity records (kinds with velocity = true, v0.5): slot 0 (never an entity) as an
+--     escape, u8 header (Codec.VEL / SPIN / VEL_WIDE / SPIN_WIDE / CUT), then the record as
+--     above, then the velocity and the spin the header describes (Codec.writeMotion). A
+--     record is self-describing: a receiver that does not know the slot still skips it.
 --
 -- Tiers per receiver and entity (recomputed every Config.InterestEvery):
 --   1 near  (<= kind.near)  every sample
@@ -41,6 +45,8 @@ local round = math.round
 local ceil = math.ceil
 local write = Codec.write
 local writeDt = Codec.writeDt
+local writeMotion = Codec.writeMotion
+local MOTION_CUT = Codec.CUT
 
 local active = State.active
 local owner = State.owner
@@ -58,6 +64,7 @@ local recOff = table.create(1024, 0) :: { number } -- byte offset of record r (r
 local recKeep = table.create(1024, false) :: { boolean } -- kept for reduced tiers
 local entFirst = {} :: { [number]: number }
 local entLast = {} :: { [number]: number }
+local entVel = {} :: { [number]: number } -- bytes of the entity's records this frame (velocity rings; else 0)
 local dirty = table.create(256, 0) :: { number }
 local ndirty = 0
 
@@ -382,6 +389,7 @@ function Relay.step(now: number, dt: number)
 	-- 2. encode every new sample once
 	local pos = 0
 	local nrec = 0
+	local nvel = 0 -- samples of velocity rings
 	for d = 1, ndirty do
 		local slot = dirty[d]
 		local h = hist[slot]
@@ -408,11 +416,26 @@ function Relay.step(now: number, dt: number)
 		end
 		local ts, xs, ys, zs, yaws, fls = h.t, h.x, h.y, h.z, h.yaw, h.fl
 		entFirst[slot] = nrec + 1
-		ensureScratch(pos + (last - from + 1) * 32)
+		local vel = h.vel
+		local entAt = pos
+		ensureScratch(pos + (last - from + 1) * (if vel then 64 else 32))
 		for li = from, last do
 			local p = li % cap + 1
 			nrec += 1
 			recOff[nrec] = pos
+			local hdrAt = 0
+			if vel then
+				-- escape + header (the header is written once the velocity is)
+				if wide then
+					writeu16(scratch, pos, 0)
+					pos += 2
+				else
+					writeu8(scratch, pos, 0)
+					pos += 1
+				end
+				hdrAt = pos
+				pos += 1
+			end
 			if wide then
 				writeu16(scratch, pos, slot)
 				pos += 2
@@ -422,12 +445,23 @@ function Relay.step(now: number, dt: number)
 			end
 			pos = writeDt(scratch, pos, round((frameTime - ts[p]) / TICK))
 			local fl = fls[p]
+			local tele = fl % 2 -- the sample's own flags hold the teleport bit only
 			if fullBit == 2 then
-				pos = write(scratch, pos, xs[p], ys[p], zs[p], yaws[p], fl + 2, h.qx[p], h.qy[p], h.qz[p], h.qw[p], cx, cy, cz)
+				pos = write(scratch, pos, xs[p], ys[p], zs[p], yaws[p], tele + 2, h.qx[p], h.qy[p], h.qz[p], h.qw[p], cx, cy, cz)
 			else
-				pos = write(scratch, pos, xs[p], ys[p], zs[p], yaws[p], fl, 0, 0, 0, 1, cx, cy, cz)
+				pos = write(scratch, pos, xs[p], ys[p], zs[p], yaws[p], tele, 0, 0, 0, 1, cx, cy, cz)
 			end
-			local keep = fl % 2 == 1 or li % farEvery == 0
+			if vel then
+				local mh
+				pos, mh = writeMotion(scratch, pos, h.vx[p], h.vy[p], h.vz[p], h.wx[p], h.wy[p], h.wz[p])
+				if fl >= 8 then
+					mh += MOTION_CUT
+				end
+				writeu8(scratch, hdrAt, mh)
+				nvel += 1
+			end
+			-- teleports and cuts always go to mid/far too
+			local keep = tele == 1 or fl >= 8 or li % farEvery == 0
 			if not keep and li > oldest then
 				-- idle markers (stop sample, keep-alive, rest marker: same pose as the
 				-- previous sample) always go to mid/far too, or those receivers would
@@ -439,9 +473,15 @@ function Relay.step(now: number, dt: number)
 			recKeep[nrec] = keep
 		end
 		entLast[slot] = nrec
+		entVel[slot] = if vel then pos - entAt else 0
 		relayed[slot] = last
 	end
 	recOff[nrec + 1] = pos
+	local anyVel = nvel > 0
+	local velBytes = 0
+	if anyVel then
+		counters.velocitySamples += nvel
+	end
 
 	-- 3. per receiver: memcpy ranges, split at MaxPacket, budget for mid/far
 	local maxPacket = Config.MaxPacket
@@ -480,6 +520,9 @@ function Relay.step(now: number, dt: number)
 					runFirst = ef
 				end
 				runLast = entLast[slot]
+				if anyVel then
+					velBytes += entVel[slot]
+				end
 			elseif tier < 4 then
 				nd += 1
 				defer[nd] = slot
@@ -495,7 +538,10 @@ function Relay.step(now: number, dt: number)
 					local slot = defer[i]
 					if tiers[slot] == pass then
 						if sentBytes + outPos < tokens then
-							copyKept(entFirst[slot], entLast[slot], maxPacket)
+							local kept = copyKept(entFirst[slot], entLast[slot], maxPacket)
+							if anyVel and entVel[slot] > 0 then
+								velBytes += kept
+							end
 						else
 							counters.budgetDropped += 1
 						end
@@ -513,6 +559,13 @@ function Relay.step(now: number, dt: number)
 		counters.relayPackets += sentPackets
 	end
 	curPlayer = nil
+	if anyVel then
+		counters.velocityBytes += velBytes
+		if lh then
+			lh.count("Tide.Velocity.samples", nvel)
+			lh.count("Tide.Velocity.bytes", velBytes)
+		end
+	end
 end
 
 return Relay

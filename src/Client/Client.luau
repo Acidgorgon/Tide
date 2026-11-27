@@ -67,6 +67,8 @@ end
 -- Entities
 --------------------------------------------------------------------------------
 
+local serverNone = {} :: { [any]: boolean } -- kinds whose apply = "none" came from the server's hello
+
 local function restoreAnchor(slot: number)
 	local before = State.anchoredBefore[slot]
 	local root = State.root[slot]
@@ -285,7 +287,7 @@ local function addEntity(slot: number, kind: any, model: any, ownerId: number)
 	State.kind[slot] = kind
 	State.ownerId[slot] = ownerId
 	setModel(slot, model)
-	State.ring[slot] = Ring.new(Config.ClientRing, kind.full)
+	State.ring[slot] = Ring.new(Config.ClientRing, kind.full, kind.velocity and kind.motion ~= false)
 	State.src[slot] = sourceFor(kind, ownerId)
 	State.pkt[slot] = 0
 	State.dirtyFrom[slot] = math.huge
@@ -334,6 +336,7 @@ local function readHello(b: buffer, pos: number, insts: { any }): number
 	local n = buffer.readu8(b, pos + 27)
 	pos += 28
 	table.clear(Kinds.byId)
+	local applyChanged = false
 	for _ = 1, n do
 		local id = buffer.readu8(b, pos)
 		local len = buffer.readu8(b, pos + 1)
@@ -345,6 +348,22 @@ local function readHello(b: buffer, pos: number, insts: { any }): number
 		kind.full = kindFlags % 2 == 1
 		kind.animations = (kindFlags // 2) % 2 == 0
 		kind.motion = (kindFlags // 4) % 2 == 0
+		kind.velocity = (kindFlags // 8) % 2 == 1
+		-- the server's apply = "none" (game code draws these entities) unless this client set
+		-- its own apply for the kind
+		if (kindFlags // 16) % 2 == 1 then
+			if kind.apply == "cframe" then
+				kind.apply = "none"
+				serverNone[kind] = true
+				applyChanged = true
+			end
+		elseif serverNone[kind] then
+			serverNone[kind] = nil
+			if kind.apply == "none" then
+				kind.apply = "cframe"
+				applyChanged = true
+			end
+		end
 		kind.rotation = if kind.full then "full" else "yaw"
 		kind.buffer = buffer.readf32(b, pos + 5)
 		kind.extrapolate = buffer.readf32(b, pos + 9)
@@ -387,6 +406,19 @@ local function readHello(b: buffer, pos: number, insts: { any }): number
 	elseif State.animations or AnimOwner.ownerLocal then
 		warn("Tide: the server has animations off; this client turned them on")
 		AnimOwner.unhook()
+	end
+	if applyChanged then
+		-- entities that exist already: Tide anchors only the roots it moves
+		for k = 1, State.count do
+			local slot = State.active[k]
+			if State.kind[slot].apply == "cframe" then
+				if not State.mine[slot] then
+					anchorIfDriven(slot)
+				end
+			else
+				restoreAnchor(slot)
+			end
+		end
 	end
 	State.helloed = true
 	return pos
@@ -856,8 +888,9 @@ function Client.velocity(model: any): Vector3
 	return Vector3.new(State.vX[slot], State.vY[slot], State.vZ[slot])
 end
 
--- Newest received sample (no buffering delay).
-function Client.latest(model: any): CFrame?
+-- Newest received sample (no buffering delay). Kinds with velocity = true (v0.5): also its
+-- velocity, its spin and its server time.
+function Client.latest(model: any): (CFrame?, Vector3?, Vector3?, number?)
 	local slot = slotOf(model)
 	if slot == nil then
 		return nil
@@ -868,7 +901,7 @@ function Client.latest(model: any): CFrame?
 	end
 	local p = r.last % r.cap + 1
 	local full = r.full
-	return Rig.cframe(
+	local cf = Rig.cframe(
 		r.x[p],
 		r.y[p],
 		r.z[p],
@@ -879,20 +912,40 @@ function Client.latest(model: any): CFrame?
 		if full then r.qz[p] else 0,
 		if full then r.qw[p] else 1
 	)
+	if r.vel then
+		return cf, Vector3.new(r.vx[p], r.vy[p], r.vz[p]), Vector3.new(r.wx[p], r.wy[p], r.wz[p]), r.t[p]
+	end
+	return cf
 end
 
--- Pose at an arbitrary server time from the client's ring (debug / lag tools).
-function Client.at(model: any, t: number): CFrame?
+-- Pose at an arbitrary server time from the samples this client has received (the path Tide
+-- draws; Tide.at(model, Tide.timeOf(model)) is the pose at the time the entity is drawn).
+-- Kinds with velocity = true (v0.5): also the velocity (studs/s) and the spin (rad/s) of the
+-- path at t. Past the newest sample the pose holds, or with `extrapolate` (seconds) continues
+-- at that sample's velocity for at most that long.
+local motion = Interp.motion
+
+function Client.at(model: any, t: number, extrapolate: number?): (CFrame?, Vector3?, Vector3?)
 	local slot = slotOf(model)
 	if slot == nil then
 		return nil
 	end
 	local r = State.ring[slot]
-	local x, y, z, yaw, qx, qy, qz, qw, state = Interp.sample(r, t, 0)
+	local x, y, z, yaw, qx, qy, qz, qw, state
+	if extrapolate ~= nil and extrapolate > 0 then
+		local kind = State.kind[slot]
+		x, y, z, yaw, qx, qy, qz, qw, state = Interp.sample(r, t, extrapolate, 0.5 / kind.rate, kind.maxSpeed, kind.maxRise, kind.maxFall)
+	else
+		x, y, z, yaw, qx, qy, qz, qw, state = Interp.sample(r, t, 0)
+	end
 	if state == Interp.STATE_EMPTY then
 		return nil
 	end
-	return Rig.cframe(x, y, z, yaw, r.full, qx, qy, qz, qw)
+	local cf = Rig.cframe(x, y, z, yaw, r.full, qx, qy, qz, qw)
+	if r.vel then
+		return cf, Vector3.new(motion[1], motion[2], motion[3]), Vector3.new(motion[4], motion[5], motion[6])
+	end
+	return cf
 end
 
 -- Stream health of a remote entity, for lag displays and diagnostics:

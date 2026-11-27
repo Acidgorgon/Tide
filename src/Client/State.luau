@@ -87,6 +87,7 @@ State.counters = {
 	uploadBytes = 0,
 	uploadSkipped = 0, -- unchanged samples not uploaded (idle)
 	applyErrors = 0,
+	velocityRecords = 0, -- records with velocity received (kinds with velocity = true, v0.5)
 	-- animation channel
 	animSent = 0, -- events this client sent for entities it owns
 	animApplied = 0, -- events applied to remote entities

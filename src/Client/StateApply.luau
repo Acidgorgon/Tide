@@ -40,6 +40,7 @@ local QCAP = 64
 local TICK = StateSchema.TICK
 local INF = math.huge
 local REF = StateSchema.CODES.ref
+local STRUCT = StateSchema.STRUCT
 local TO_OWNER = StateSchema.TO_OWNER
 local TO_SERVER = StateSchema.TO_SERVER
 
@@ -125,6 +126,27 @@ local function isRef(f: Field): boolean
 	return pf ~= nil and pf.code == REF
 end
 
+-- The ref members of an event's payload with named members (nil: none).
+local function refMembersOf(f: Field): { Field }?
+	local pf = f.payloadField
+	if pf ~= nil and pf.code == STRUCT then
+		return pf.refMembers
+	end
+	return nil
+end
+
+-- A payload table kept here (ref members as slot numbers): members that point at `slot` read nil.
+local function dropMemberRefs(tbl: any, refMembers: { Field }, slot: number)
+	if type(tbl) ~= "table" then
+		return
+	end
+	for _, m in refMembers do
+		if tbl[m.name] == slot then
+			tbl[m.name] = 0
+		end
+	end
+end
+
 local function dropRefs(slot: number)
 	if next(schemas) == nil then
 		return
@@ -147,6 +169,11 @@ local function dropRefs(slot: number)
 				if pv ~= nil and pv[id] == slot then
 					pv[id] = 0
 				end
+			else
+				local rm = refMembersOf(f)
+				if rm ~= nil and vv ~= nil then
+					dropMemberRefs(vv[f.id], rm, slot)
+				end
 			end
 		end
 		local q = queues[s]
@@ -156,6 +183,11 @@ local function dropRefs(slot: number)
 				local f = q.f[p]
 				if f and q.v[p] == slot and isRef(f) then
 					q.v[p] = 0
+				elseif f then
+					local rm = refMembersOf(f)
+					if rm ~= nil then
+						dropMemberRefs(q.v[p], rm, slot)
+					end
 				end
 			end
 		end
@@ -220,14 +252,35 @@ local function refModel(v: any): any
 	return nil
 end
 
+-- A payload with named members as game code gets it: ref members as models (a frozen copy;
+-- payloads without ref members are handed out as they are, frozen when decoded).
+local function publicStruct(pf: Field, v: any): any
+	local refMembers = pf.refMembers
+	if refMembers == nil or type(v) ~= "table" then
+		return v
+	end
+	local out = table.clone(v)
+	for _, m in refMembers do
+		out[m.name] = refModel(out[m.name])
+	end
+	return table.freeze(out)
+end
+
 -- What a field's applied value means to game code (refs as models).
 local function public(f: Field, v: any): any
-	if f.code == REF then
+	local code = f.code
+	if code == REF then
 		return refModel(v)
+	elseif code == STRUCT then
+		return publicStruct(f, v)
 	elseif f.event then
 		local pf = f.payloadField
-		if pf ~= nil and pf.code == REF then
-			return refModel(v)
+		if pf ~= nil then
+			if pf.code == REF then
+				return refModel(v)
+			elseif pf.code == STRUCT then
+				return publicStruct(pf, v)
+			end
 		end
 	end
 	return v

@@ -4,14 +4,20 @@
 --
 -- Field options:
 --   type      "bool" | "u8" | "u16" | "i16" | "f32" | "f64" | "time" | "ref" | "enum" | "event"
---             | "yaw" (flat direction, Vector3) | "pos" (Vector3)
+--             | "yaw" (flat direction, Vector3) | "pos" (Vector3) | "vector" (the same as "pos":
+--             any Vector3, e.g. a velocity; v0.5) | "cframe" (CFrame; v0.5)
 --   default   value before the first set and after set(nil) (bool false, numbers 0, others nil)
 --   to        "all" (default) | "owner" | "others" | "server" ("none" is accepted for "server")
 --   apply     "drawn" (default: when the receiver's render clock for the entity reaches the stamp)
 --             | "arrival"
 --   values    enum: list of strings
 --   payload   event: type of the optional payload ("bool", "u8", "u16", "i16", "f32", "f64", "enum"
---             with values, "ref")
+--             with values, "ref", "yaw", "pos", "vector", "cframe"), or (v0.5) a table of named
+--             members, each a type name or { type = "enum", values = { ... } }:
+--               Kick = { type = "event", payload = { Position = "pos", Velocity = "vector", By = "ref" } }
+--               Tide.fire(ball, "Kick", { Position = p, Velocity = v, By = character }, stamp)
+--             Member types: every value type and "time" (1 to 32 members). A member left out of
+--             a fire is its type's default (false, 0, or nil). Listeners get a frozen table.
 --   mirror    attribute name the client sets locally when a change applies
 --   mirrorOn  "model" (default) | "player" (the owning Player)
 --   mirrorNil attribute value written when the field is nil (string, number or boolean)
@@ -24,7 +30,13 @@
 -- Values on the wire:
 --   bool u8 | u8 | u16 | i16 | f32 | f64 | time i16 (0.5 ms relative to the change's stamp;
 --   -32768 = f64 follows) | ref u16 slot | enum u8 index (1-based) | yaw u16 (angle / 2pi * 65536)
---   | pos 3 x f32 | event: its payload (nothing without one)
+--   | pos / vector 3 x f32 | cframe 3 x f32 position + u32 rotation (smallest-three quaternion,
+--   10 bits a component: under 0.1 degree) | event: its payload (nothing without one)
+--   | members payload: presence bits (u8 up to 8 members, u16 up to 16, else u32; bit i - 1 =
+--   member i in name order has a value), then the values of the members present
+
+local Codec = require(script.Parent.Codec)
+local Rig = require(script.Parent.Rig)
 
 local StateSchema = {}
 
@@ -45,6 +57,8 @@ export type Field = {
 	mirrorNil: any,
 	history: number,
 	event: boolean,
+	members: { Field }?, -- payload with named members (code STRUCT): its members, by name
+	refMembers: { Field }?, -- those of type ref (nil when none)
 }
 
 export type Schema = {
@@ -77,7 +91,15 @@ local NAMES = {}
 for name, code in CODES do
 	NAMES[code] = name
 end
+-- v0.5
+CODES.cframe = 13
+NAMES[13] = "cframe"
+CODES.vector = 12 -- another name for pos (NAMES keeps "pos": one checksum for both spellings)
+local STRUCT = 14 -- an event payload with named members (never a field's own type)
+NAMES[STRUCT] = "struct"
 StateSchema.CODES = CODES
+StateSchema.STRUCT = STRUCT
+local MAX_MEMBERS = 32
 
 StateSchema.TO_ALL = 0
 StateSchema.TO_OWNER = 1
@@ -109,6 +131,13 @@ local scratch = buffer.create(4)
 local function toF32(v: number): number
 	buffer.writef32(scratch, 0, v)
 	return buffer.readf32(scratch, 0)
+end
+
+-- A CFrame as a receiver decodes it: f32 position, rotation through the packed quaternion.
+local function quantizeCFrame(cf: any): any
+	local x, y, z, _, qx, qy, qz, qw = Rig.fromCFrame(cf, true)
+	qx, qy, qz, qw = Codec.unpackQuat(Codec.packQuat(qx, qy, qz, qw))
+	return Rig.cframe(toF32(x), toF32(y), toF32(z), 0, true, qx, qy, qz, qw)
 end
 
 local function defaultOf(code: number): any
@@ -186,6 +215,15 @@ local function normalize(f: Field, code: number, value: any, level: number, ctx:
 			error(`{what(ctx, f)} must be a Vector3`, level)
 		end
 		return Vector3.new(toF32(value.X), toF32(value.Y), toF32(value.Z))
+	elseif code == 13 then
+		if typeof(value) ~= "CFrame" then
+			error(`{what(ctx, f)} must be a CFrame`, level)
+		end
+		local p = value.Position
+		if p.X ~= p.X or p.Y ~= p.Y or p.Z ~= p.Z then
+			error(`{what(ctx, f)} must be a CFrame (not NaN)`, level)
+		end
+		return quantizeCFrame(value)
 	end
 	error(`{what(ctx, f)}: an event field has no value (use Tide.fire)`, level)
 end
@@ -204,10 +242,43 @@ function StateSchema.checkPayload(f: Field, value: any, level: number): any
 		end
 		return true
 	end
-	if value == nil and pf.default == nil and (pf.code == CODES.yaw or pf.code == CODES.pos) then
+	if value == nil and pf.default == nil and (pf.code == CODES.yaw or pf.code == CODES.pos or pf.code == CODES.cframe) then
 		error(`Tide.fire: event {f.name} needs its payload`, level + 1)
 	end
 	return normalize(pf, pf.code, value, level + 1, 2)
+end
+
+local quantizeTime
+
+-- Server: the frozen table to store for a fire of an event whose payload has named members.
+-- `stamp` is the fire's stamp (time members are kept as clients decode them); `ref` turns a
+-- ref member's value (model or handle) into the model, or errors.
+function StateSchema.checkStruct(f: Field, value: any, level: number, stamp: number, ref: (any) -> any): any
+	local pf = f.payloadField :: Field
+	local members = pf.members :: { Field }
+	if type(value) ~= "table" then
+		error(`Tide.fire: the payload of {f.name} must be a table of its members`, level + 1)
+	end
+	for key in value do
+		if type(key) ~= "string" or (pf.index :: any)[key] == nil then
+			error(`Tide.fire: the payload of {f.name} has no member {tostring(key)}`, level + 1)
+		end
+	end
+	local out = {}
+	for _, m in members do
+		local v = value[m.name]
+		local code = m.code
+		if code == CODES.ref then
+			v = ref(v)
+		else
+			v = normalize(m, code, v, level + 1, `Tide.fire: {f.name}.{m.name}`)
+			if code == CODES.time and v ~= nil then
+				v = quantizeTime(v, stamp)
+			end
+		end
+		out[m.name] = v
+	end
+	return table.freeze(out)
 end
 
 -- A time value on the 0.5 ms grid relative to its stamp (exactly what a client decodes).
@@ -218,6 +289,7 @@ function StateSchema.quantizeTime(value: number, stamp: number): number
 	end
 	return value
 end
+quantizeTime = StateSchema.quantizeTime
 
 local function fnv(h: number, s: string): number
 	for i = 1, #s do
@@ -235,6 +307,15 @@ local function checksum(fields: { Field }): number
 			h = fnv(h, table.concat(f.values, ","))
 		end
 		h = fnv(h, ":" .. tostring(f.payload) .. ":" .. tostring(f.mirror) .. ":" .. f.mirrorOn)
+		local pf = f.payloadField
+		if pf ~= nil and pf.members ~= nil then
+			for _, m in pf.members do
+				h = fnv(h, "|" .. m.name .. ":" .. m.type)
+				if m.values then
+					h = fnv(h, table.concat(m.values, ","))
+				end
+			end
+		end
 	end
 	return h
 end
@@ -303,7 +384,7 @@ function StateSchema.build(kind: string, decl: { [string]: any }): Schema
 		local f: Field = {
 			id = 0,
 			name = name,
-			type = opts.type,
+			type = NAMES[code],
 			code = code,
 			to = to,
 			arrival = apply == "arrival",
@@ -317,6 +398,8 @@ function StateSchema.build(kind: string, decl: { [string]: any }): Schema
 			mirrorNil = nil,
 			history = 0, -- 0: Config.StateHistory
 			event = code == CODES.event,
+			members = nil,
+			refMembers = nil,
 		}
 		local function enumValues(values: any)
 			if type(values) ~= "table" or #values == 0 or #values > 255 then
@@ -334,17 +417,86 @@ function StateSchema.build(kind: string, decl: { [string]: any }): Schema
 		elseif opts.values ~= nil and opts.payload ~= "enum" then
 			error(`{where}: values is for enum fields (and events with payload = "enum")`, 3)
 		end
-		if opts.payload ~= nil then
+		if type(opts.payload) == "table" then
+			-- named members (v0.5)
+			if not f.event then
+				error(`{where}: payload is for event fields`, 3)
+			end
+			local members = {}
+			for mname, mopts in opts.payload do
+				local mwhere = `{where}: payload member {tostring(mname)}`
+				if type(mname) ~= "string" or #mname == 0 or #mname > 64 then
+					error(`{mwhere}: names must be strings of 1 to 64 characters`, 3)
+				end
+				if type(mopts) == "string" then
+					mopts = { type = mopts }
+				end
+				if type(mopts) ~= "table" then
+					error(`{mwhere}: a type name, or {"{"} type = "enum", values = ... {"}"}`, 3)
+				end
+				for key in mopts do
+					if key ~= "type" and key ~= "values" then
+						error(`{mwhere}: unknown option {tostring(key)}`, 3)
+					end
+				end
+				local mcode = CODES[mopts.type]
+				if mcode == nil or mcode == CODES.event then
+					error(`{mwhere}: unknown type {tostring(mopts.type)}`, 3)
+				end
+				local m: any = table.clone(f)
+				m.name = mname
+				m.code = mcode
+				m.type = NAMES[mcode]
+				m.event = false
+				m.default = defaultOf(mcode)
+				m.values, m.index = nil, nil
+				if mcode == CODES.enum then
+					local ok, values, index = pcall(enumValues, mopts.values)
+					if not ok then
+						error(`{mwhere}: an enum needs values = a list of 1 to 255 strings`, 3)
+					end
+					m.values, m.index = values, index
+				elseif mopts.values ~= nil then
+					error(`{mwhere}: values is for enum members`, 3)
+				end
+				table.insert(members, m)
+			end
+			if #members == 0 or #members > MAX_MEMBERS then
+				error(`{where}: a payload has 1 to {MAX_MEMBERS} members`, 3)
+			end
+			table.sort(members, function(a, b)
+				return a.name < b.name
+			end)
+			local pf: any = table.clone(f)
+			pf.code = STRUCT
+			pf.type = NAMES[STRUCT]
+			pf.event = false
+			pf.default = nil
+			pf.members = members
+			local index = {}
+			local refMembers = {}
+			for i, m in members do
+				m.id = i
+				index[m.name] = i
+				if m.code == CODES.ref then
+					table.insert(refMembers, m)
+				end
+			end
+			pf.index = index
+			pf.refMembers = if #refMembers > 0 then refMembers else nil
+			f.payload = STRUCT
+			f.payloadField = pf
+		elseif opts.payload ~= nil then
 			local pcode = CODES[opts.payload]
 			if not f.event then
 				error(`{where}: payload is for event fields`, 3)
 			end
 			if pcode == nil or pcode == CODES.event or pcode == CODES.time then
-				error(`{where}: payload must be a value type (bool, u8, u16, i16, f32, f64, enum, ref, yaw, pos)`, 3)
+				error(`{where}: payload must be a value type (bool, u8, u16, i16, f32, f64, enum, ref, yaw, pos, vector, cframe) or a table of members`, 3)
 			end
 			local pf: any = table.clone(f)
 			pf.code = pcode
-			pf.type = opts.payload
+			pf.type = NAMES[pcode]
 			pf.event = false
 			pf.default = defaultOf(pcode)
 			if pcode == CODES.enum then
@@ -355,8 +507,8 @@ function StateSchema.build(kind: string, decl: { [string]: any }): Schema
 			f.payloadField = pf
 		end
 		if opts.default ~= nil then
-			if code == CODES.ref or f.event then
-				error(`{where}: ref and event fields have no default`, 3)
+			if code == CODES.ref or code == CODES.cframe or f.event then
+				error(`{where}: ref, cframe and event fields have no default`, 3)
 			end
 			f.default = normalize(f, code, opts.default, 3, `{where}: default`)
 		end
@@ -401,7 +553,7 @@ local TWO_PI = 2 * math.pi
 
 -- Writes a (non-default) value. `wire` is the value as sent: refs as slot numbers.
 function StateSchema.writeValue(w: any, ensure: (any, number) -> (), code: number, f: Field, wire: any, stamp: number)
-	ensure(w, 13)
+	ensure(w, 16)
 	local b, p = w.b, w.pos
 	if code == 1 then
 		buffer.writeu8(b, p, if wire then 1 else 0)
@@ -442,6 +594,56 @@ function StateSchema.writeValue(w: any, ensure: (any, number) -> (), code: numbe
 		buffer.writef32(b, p + 4, wire.Y)
 		buffer.writef32(b, p + 8, wire.Z)
 		w.pos = p + 12
+	elseif code == 13 then
+		local x, y, z, _, qx, qy, qz, qw = Rig.fromCFrame(wire, true)
+		buffer.writef32(b, p, x)
+		buffer.writef32(b, p + 4, y)
+		buffer.writef32(b, p + 8, z)
+		buffer.writeu32(b, p + 12, Codec.packQuat(qx, qy, qz, qw))
+		w.pos = p + 16
+	end
+end
+
+-- Bytes of the presence bits of a payload with n members.
+local function maskSize(n: number): number
+	return if n <= 8 then 1 elseif n <= 16 then 2 else 4
+end
+
+-- Writes a payload with named members. `slotOf[model]` is a ref member's slot (nil: the
+-- entity is gone; the member is sent as absent).
+function StateSchema.writeStruct(w: any, ensure: (any, number) -> (), pf: Field, value: any, stamp: number, slotOf: { [any]: number })
+	local members = pf.members :: { Field }
+	local ms = maskSize(#members)
+	ensure(w, ms)
+	local at = w.pos
+	w.pos = at + ms
+	local mask = 0
+	local bit = 1
+	for _, m in members do
+		local v = if value ~= nil then value[m.name] else nil
+		if v ~= nil then
+			local code = m.code
+			if code == CODES.ref then
+				local slot = slotOf[v]
+				if slot ~= nil then
+					ensure(w, 2)
+					buffer.writeu16(w.b, w.pos, slot)
+					w.pos += 2
+					mask += bit
+				end
+			else
+				StateSchema.writeValue(w, ensure, code, m, v, stamp)
+				mask += bit
+			end
+		end
+		bit *= 2
+	end
+	if ms == 1 then
+		buffer.writeu8(w.b, at, mask)
+	elseif ms == 2 then
+		buffer.writeu16(w.b, at, mask)
+	else
+		buffer.writeu32(w.b, at, mask)
 	end
 end
 
@@ -515,6 +717,49 @@ function StateSchema.readValue(b: buffer, p: number, n: number, code: number, f:
 			return -1, nil
 		end
 		return p + 12, Vector3.new(buffer.readf32(b, p), buffer.readf32(b, p + 4), buffer.readf32(b, p + 8))
+	elseif code == 13 then
+		if p + 16 > n then
+			return -1, nil
+		end
+		local x, y, z = buffer.readf32(b, p), buffer.readf32(b, p + 4), buffer.readf32(b, p + 8)
+		if x ~= x or y ~= y or z ~= z then
+			return -1, nil
+		end
+		local qx, qy, qz, qw = Codec.unpackQuat(buffer.readu32(b, p + 12))
+		return p + 16, Rig.cframe(x, y, z, 0, true, qx, qy, qz, qw)
+	elseif code == STRUCT then
+		-- named members: a table (ref members as slot numbers; frozen when it has none)
+		local members = f.members :: { Field }
+		local ms = maskSize(#members)
+		if p + ms > n then
+			return -1, nil
+		end
+		local mask = if ms == 1 then buffer.readu8(b, p) elseif ms == 2 then buffer.readu16(b, p) else buffer.readu32(b, p)
+		p += ms
+		if mask >= 2 ^ #members then
+			return -1, nil
+		end
+		local out = {}
+		for _, m in members do
+			if mask % 2 == 1 then
+				local np, v = StateSchema.readValue(b, p, n, m.code, m, stamp)
+				if np < 0 then
+					return -1, nil
+				end
+				p = np
+				if m.code == CODES.ref and v == 0 then
+					v = nil
+				end
+				out[m.name] = v
+			else
+				out[m.name] = m.default
+			end
+			mask //= 2
+		end
+		if f.refMembers == nil then
+			table.freeze(out)
+		end
+		return p, out
 	elseif code == 10 then
 		return p, true
 	end
@@ -525,9 +770,12 @@ end
 -- Schema message (32 SCHEMA): u8 kinds, per kind: u8 kind id, u32 checksum, u8 field count,
 -- per field (id order): u8 name length, name, u8 type, u8 flags (bits 0-1 to, bit2 arrival,
 -- bit3 mirror, bit4 mirror on player, bit5 default, bit6 mirrorNil),
--- [event: u8 payload type], [enum or enum payload: u8 count, count x (u8 length, string)],
+-- [event: u8 payload type; type 14 (named members, v0.5): u8 count, count x (u8 length, name,
+-- u8 type, [enum: u8 count, count x (u8 length, string)])],
+-- [enum or enum payload: u8 count, count x (u8 length, string)],
 -- [mirror: u8 length, name], [mirrorNil: u8 tag (1 string, 2 number, 3 boolean), value],
 -- [default: u8 0/1 (bool) | f64 (numbers, time) | u8 index (enum) | 3 x f32 (yaw, pos)]
+-- Types: 1 bool .. 12 pos (CODES), 13 cframe (v0.5; "vector" is sent as 12).
 --------------------------------------------------------------------------------
 
 local function wstr(w: any, ensure: (any, number) -> (), s: string)
@@ -575,6 +823,20 @@ function StateSchema.writeSchema(w: any, ensure: (any, number) -> (), kindId: nu
 		wu8(w, ensure, flags)
 		if f.event then
 			wu8(w, ensure, f.payload)
+			local pf = f.payloadField
+			if pf ~= nil and pf.members ~= nil then
+				wu8(w, ensure, #pf.members)
+				for _, m in pf.members do
+					wstr(w, ensure, m.name)
+					wu8(w, ensure, m.code)
+					if m.values then
+						wu8(w, ensure, #m.values)
+						for _, v in m.values do
+							wstr(w, ensure, v)
+						end
+					end
+				end
+			end
 		end
 		if f.values then
 			wu8(w, ensure, #f.values)
@@ -650,7 +912,7 @@ function StateSchema.readSchema(b: buffer, p: number, n: number): (number, numbe
 		for i = 1, count do
 			local name = rstr()
 			local code = ru8()
-			if NAMES[code] == nil then
+			if NAMES[code] == nil or code == STRUCT then
 				error("type", 0)
 			end
 			local flags = ru8()
@@ -671,6 +933,8 @@ function StateSchema.readSchema(b: buffer, p: number, n: number): (number, numbe
 				mirrorNil = nil,
 				history = 0,
 				event = code == CODES.event,
+				members = nil,
+				refMembers = nil,
 			}
 			local values = nil
 			if code == CODES.enum then
@@ -697,6 +961,44 @@ function StateSchema.readSchema(b: buffer, p: number, n: number): (number, numbe
 						end
 						pf.values, pf.index = values, enumIndex(values)
 						f.values = values
+					elseif pcode == STRUCT then
+						local count = ru8()
+						if count == 0 or count > MAX_MEMBERS then
+							error("members", 0)
+						end
+						local members = {}
+						local index = {}
+						local refMembers = {}
+						for k = 1, count do
+							local mname = rstr()
+							local mcode = ru8()
+							if NAMES[mcode] == nil or mcode == CODES.event or mcode == STRUCT then
+								error("member", 0)
+							end
+							local m: any = table.clone(f)
+							m.id = k
+							m.name = mname
+							m.code = mcode
+							m.type = NAMES[mcode]
+							m.event = false
+							m.default = defaultOf(mcode)
+							if mcode == CODES.enum then
+								local mv = {}
+								for j = 1, ru8() do
+									mv[j] = rstr()
+								end
+								m.values, m.index = mv, enumIndex(mv)
+							end
+							members[k] = m
+							index[mname] = k
+							if mcode == CODES.ref then
+								table.insert(refMembers, m)
+							end
+						end
+						pf.default = nil
+						pf.members = members
+						pf.index = index
+						pf.refMembers = if #refMembers > 0 then refMembers else nil
 					end
 					f.payload = pcode
 					f.payloadField = pf

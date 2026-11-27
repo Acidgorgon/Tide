@@ -39,6 +39,24 @@ function Rig.read(model: any, root: any, full: boolean): (number, number, number
 	return x, y, z, yaw, 0, 0, 0, 1
 end
 
+-- Linear velocity (studs/s) and angular velocity (rad/s, world frame) of the root's assembly.
+-- Zero without a root part (pivot-only models).
+function Rig.readMotion(root: any): (number, number, number, number, number, number)
+	if root == nil then
+		return 0, 0, 0, 0, 0, 0
+	end
+	local v = root.AssemblyLinearVelocity
+	local w = root.AssemblyAngularVelocity
+	local vx, vy, vz, wx, wy, wz = 0, 0, 0, 0, 0, 0
+	if v ~= nil then
+		vx, vy, vz = v.X, v.Y, v.Z
+	end
+	if w ~= nil then
+		wx, wy, wz = w.X, w.Y, w.Z
+	end
+	return vx, vy, vz, wx, wy, wz
+end
+
 -- Pose of a CFrame as numbers (same layout as Rig.read).
 function Rig.fromCFrame(cf: CFrame, full: boolean): (number, number, number, number, number, number, number, number)
 	local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = cf:GetComponents()

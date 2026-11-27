@@ -13,7 +13,8 @@
 --               owner-local, bit3 ownerEase, bits4-5 ownerStart (0 drawn, 1 latest, 2 server),
 --               bit6 rebindStreamed), u8 upload redundancy, u8 kind count,
 --               per kind: u8 id, u8 name length, name, f32 rate, u8 flags (bit0 full, bit1 animations
---               off for this kind, bit2 state-only: motion = false), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise,
+--               off for this kind, bit2 state-only: motion = false, bit3 velocity records (v0.5), bit4 apply = "none"
+--               on the server: clients do not move the model unless they set their own apply (v0.5)), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise,
 --               f32 maxFall,
 --               only with animations: u16 animation folder instance index, u16 folder id count,
 --               u32 folder checksum
