@@ -1046,6 +1046,31 @@ function Server.at(target: any, t: number): (CFrame?, Vector3?, Vector3?)
 	return cf
 end
 
+-- The server times the entity's history covers: its oldest kept sample and its newest. Tide.at
+-- answers from the path inside that range and holds the nearest end outside it. For a
+-- server-owned entity at rest the newest end is the last tick that found it unchanged (ticks
+-- between the stop sample and the keep-alive add no sample, but the pose is known to stand).
+-- nil, nil for unknown targets and state-only entities.
+function Server.span(target: any): (number?, number?)
+	local slot = Server.slotOf(target)
+	if slot == nil or State.kind[slot].motion == false then
+		return nil, nil
+	end
+	local h = State.hist[slot]
+	local n = h.n
+	if n == 0 then
+		return nil, nil
+	end
+	local cap = h.cap
+	local last = h.last
+	local newest = h.t[last % cap + 1]
+	local held = State.heldT[slot]
+	if held > newest then
+		newest = held
+	end
+	return h.t[(last - n + 1) % cap + 1], newest
+end
+
 -- Newest sample. Kinds with velocity = true (v0.5): also its velocity, its spin and its server
 -- time.
 function Server.latest(target: any): (CFrame?, Vector3?, Vector3?, number?)

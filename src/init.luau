@@ -10,6 +10,7 @@
 --   bot:markTeleport(target?)  bot:setOrigin(origin?)  bot:link(name?, key)          (v0.4)
 --   Tide.focus(player, part | model | Vector3 | nil)          -- interest without a character (v0.4)
 --   Tide.at(model, t)                      -- rewind: CFrame at server time t (what clients drew)
+--   Tide.span(model) -> oldest, newest     -- the server times Tide.at answers without holding an end
 --   Tide.latest(model)                     -- newest accepted sample
 --   Tide.velocity(model)                   -- from history
 --   Tide.kind("Ball", { rate = 60, rotation = "full" })
@@ -20,6 +21,7 @@
 --   Tide.start()                           -- false if the server's remotes never appear (Config.startTimeout)
 --   Tide.drawn(model)  Tide.delay(model)  Tide.velocity(model)  Tide.latest(model)
 --   Tide.sampleInfo(model, into?)          -- stream health: newest, count, age, interval, jitter, idle, ...
+--   Tide.span(model) -> oldest, newest     -- the server times this client's buffer covers
 -- both
 --   Tide.owner(model) -> Player?   Tide.isMine(model) -> boolean   (v0.4)
 --   Tide.added(fn(model, kindName, owner))  Tide.removed(fn(model, kindName))
@@ -96,6 +98,17 @@ end
 -- server time; other kinds return the CFrame alone.
 function Tide.latest(model: any): (CFrame?, Vector3?, Vector3?, number?)
 	return Side.latest(model)
+end
+
+-- The server times an entity's samples cover: oldest, newest (server: the history; client: the
+-- samples received and still buffered). Tide.at(model, t) with t inside the range reads the
+-- path; outside it holds the nearest end (the client: unless asked to extrapolate), and that
+-- answer says nothing about where the entity was at t. On the server the newest end of a
+-- server-owned entity at rest is the last tick that found it unchanged. nil, nil for unknown
+-- and state-only entities, and on a client before the first sample (for an entity the client
+-- owns the range stands still: nothing is received for it).
+function Tide.span(model: any): (number?, number?)
+	return Side.span(model)
 end
 
 -- The player that owns (samples and uploads) an entity, nil when the server owns it or the

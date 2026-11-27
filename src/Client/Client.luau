@@ -948,6 +948,25 @@ function Client.at(model: any, t: number, extrapolate: number?): (CFrame?, Vecto
 	return cf
 end
 
+-- The server times the samples this client holds for an entity cover: oldest, newest (what
+-- Tide.at answers from; outside the range it holds an end, or extrapolates when asked to).
+-- nil, nil for unknown models and before the first sample. An entity this client owns
+-- receives nothing: its range stays where it was at the grant.
+function Client.span(model: any): (number?, number?)
+	local slot = slotOf(model)
+	if slot == nil then
+		return nil, nil
+	end
+	local r = State.ring[slot]
+	local n = r.n
+	if n == 0 then
+		return nil, nil
+	end
+	local cap = r.cap
+	local last = r.last
+	return r.t[(last - n + 1) % cap + 1], r.t[last % cap + 1]
+end
+
 -- Stream health of a remote entity, for lag displays and diagnostics:
 --   newest    server time of the newest sample
 --   count     samples received so far
