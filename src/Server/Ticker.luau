@@ -14,6 +14,12 @@
 -- spin, quantized as receivers decode them; a pose that stands still with a new velocity (a
 -- kick, before physics moved the body) is a new sample. Tide.bump (Server.bump) samples out of
 -- tick and marks the sample a cut.
+-- Stop redundancy (kind option restRepeats): the stop sample is the last word receivers get
+-- until the keep-alive, on an unreliable stream. With restRepeats = n the last samples of an
+-- entity that stays unchanged go out again with the relay of each of the next n ticks (Relay:
+-- which ones): the same samples, with their own times (receivers that have them drop the
+-- copies). Any change (a tick that finds the entity moved, a bump, a teleport) ends the
+-- repeats: new samples flow again.
 
 local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)
@@ -40,6 +46,9 @@ local oxs, oys, ozs = State.ox, State.oy, State.oz
 local markX, markY, markZ = State.markX, State.markY, State.markZ
 local forceCut = State.forceCut
 local bumped = State.bumped
+local restLeft = State.restLeft
+local restDue = State.restDue
+local restList = State.restList
 local counters = State.counters
 
 local quantize = Codec.quantize
@@ -125,6 +134,7 @@ function Ticker.sample(slot: number, now: number, bumpOnly: boolean?)
 			end
 			sentT[slot] = now
 			heldT[slot] = 0
+			restLeft[slot] = kind.restRepeats
 		elseif now - sentT[slot] >= kind.keepAlive then
 			local li = push(h, now, x, y, z, yaw, 0, qx, qy, qz, qw)
 			if vel then
@@ -134,6 +144,17 @@ function Ticker.sample(slot: number, now: number, bumpOnly: boolean?)
 			heldT[slot] = 0
 		else
 			heldT[slot] = now
+			local left = restLeft[slot]
+			if left > 0 then
+				-- the last samples (the stop sample and what led to it) once more
+				restLeft[slot] = left - 1
+				if not restDue[slot] then
+					restDue[slot] = true
+					local n = State.restN + 1
+					State.restN = n
+					restList[n] = slot
+				end
+			end
 		end
 		return
 	end
@@ -151,6 +172,7 @@ function Ticker.sample(slot: number, now: number, bumpOnly: boolean?)
 	end
 	heldT[slot] = 0
 	still[slot] = false
+	restLeft[slot] = 0
 	forceTele[slot] = false
 	local fl = if tele then 1 else 0
 	if forceCut[slot] then

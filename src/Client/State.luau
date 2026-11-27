@@ -83,6 +83,7 @@ State.counters = {
 	badPacket = 0,
 	unknownSlot = 0,
 	late = 0,
+	repeats = 0, -- records that were a copy of a sample already held (stop repeats, kind option restRepeats)
 	uploads = 0,
 	uploadBytes = 0,
 	uploadSkipped = 0, -- unchanged samples not uploaded (idle)

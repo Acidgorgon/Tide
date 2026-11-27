@@ -18,6 +18,13 @@
 -- (Server/Relay, Codec.readMotion). Cut samples (Tide.bump) are kept out of the buffer need:
 -- they are out of tick by design. A kind's onSample (client option) is called for each
 -- accepted sample of its entities, as it is stored.
+--
+-- Copies (kind option restRepeats: the server sends a resting entity's last samples again): a
+-- record whose time is within a quarter tick of a sample already held is that sample again
+-- and is dropped before anything looks at it (no second onSample, no need, nothing stored).
+-- Two copies decode from different packet times, so their times agree to rounding, not to
+-- the bit. A copy that arrives first (the original was lost) is stored like any sample, in
+-- its place in time (counted as late when a newer one is held).
 
 local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)
@@ -48,6 +55,8 @@ local readMotion = Codec.readMotion
 local MOTION_MAX = Codec.MOTION_MAX
 local MOTION_CUT = Codec.CUT
 local RING_CUT = Ring.CUT
+local find = Ring.find
+local DUP = TICK * 0.25
 
 local index = State.index
 local mine = State.mine
@@ -196,6 +205,14 @@ function Receive.packet(payload: any, arrival: number)
 		local newest = -math.huge
 		if r.n > 0 then
 			newest = r.t[r.last % r.cap + 1]
+		end
+		if t - newest < DUP then
+			-- not past everything held: a copy of a held sample, or a late one
+			local k = find(r, t + DUP)
+			if k > r.last - r.n and r.t[k % r.cap + 1] > t - DUP then
+				counters.repeats += 1
+				continue
+			end
 		end
 		local fl = flags % 2
 		if r.n > 0 and t - newest > snapGap then

@@ -22,6 +22,18 @@
 -- where its character last was. An entity with an audience (handle:setAudience) is culled
 -- for every receiver outside it (samples, animations and state alike); a receiver coming
 -- back in gets the entity's ADD again (Server, v0.4.1).
+--
+-- Stop repeats (kind option restRepeats; the Ticker says when): the entity's last samples are
+-- encoded again for every receiver in tiers 1 to 3: the stop sample and the two before it (the
+-- sample that brought the entity to rest, with its teleport and cut flags, and the one before:
+-- the last of the motion, or the rest marker of a body bumped at rest). A repeat is not thinned
+-- and not held back by the byte budget (it is charged to it): it is the last word about the
+-- entity until the keep-alive, and it is three records at most. Every copy of a sample has to
+-- decode to the same time whatever packet carries it, so the ages of these kinds' samples are
+-- counted between whole ticks: the packet's and the sample's own.
+--
+-- Relay.flush (Tide.flush) is the same encode and send for the entities bumped since the last
+-- relay only, with no time credited to the budgets and no tier recompute.
 
 local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)
@@ -55,8 +67,16 @@ local kinds = State.kind
 local relayed = State.relayed
 local audience = State.audience
 local oxs, oys, ozs, originUntil = State.ox, State.oy, State.oz, State.originUntil
+local late = State.late
+local lateList = State.lateList
+local restDue = State.restDue
+local restList = State.restList
 local NAN = 0 / 0
 local counters = State.counters
+-- A sample older than this is not repeated: its age would not fit the record (u16 of 0.5 ms).
+local REPEAT_MAX_AGE = 30
+-- Samples in a repeat: the stop sample and the ones before it.
+local REPEAT_SAMPLES = 3
 
 -- frame scratch
 local scratch = bcreate(16384)
@@ -67,6 +87,12 @@ local entLast = {} :: { [number]: number }
 local entVel = {} :: { [number]: number } -- bytes of the entity's records this frame (velocity rings; else 0)
 local dirty = table.create(256, 0) :: { number }
 local ndirty = 0
+-- (flags by slot are set to false, never to nil, while their entity lives: a table whose keys
+-- come and go is rebuilt again and again)
+local entRep = {} :: { [number]: boolean } -- the entity's records this frame repeat its last samples
+local repSlots = {} :: { number } -- the slots flagged in entRep, 1 .. nrep
+local nrep = 0
+local sending = false -- inside a relay (a flush from a callback in there does nothing)
 
 -- packet assembly
 local out = bcreate(1024)
@@ -354,42 +380,14 @@ local function ensureScratch(need: number)
 	scratch = nb
 end
 
-function Relay.step(now: number, dt: number)
-	local count = State.count
-
-	-- 1. which entities have new samples; frame time = max(now, newest sample) on the 0.5 ms grid
-	ndirty = 0
-	local frameTime = now
-	for k = 1, count do
-		local slot = active[k]
-		local h = hist[slot]
-		if h.last > relayed[slot] then
-			ndirty += 1
-			dirty[ndirty] = slot
-			local t = h.t[h.last % h.cap + 1]
-			if t > frameTime then
-				frameTime = t
-			end
-		end
-	end
-
-	interestAcc += dt
-	if interestAcc >= Config.InterestEvery then
-		interestAcc = 0
-		recomputeInterest()
-	end
-
-	if ndirty == 0 then
-		return
-	end
-	frameTime = ceil(frameTime / TICK) * TICK
-	lh = LH.api
-	local wide = State.maxSlot > 255
-
-	-- 2. encode every new sample once
+-- Encodes the new samples of dirty[1 .. ndirty] once into scratch (for an entity flagged in
+-- entRep: its last samples again). Returns the number of samples of velocity rings.
+local function encode(now: number, frameTime: number, wide: boolean): number
 	local pos = 0
 	local nrec = 0
 	local nvel = 0 -- samples of velocity rings
+	local reps = nrep > 0
+	local frameTick = round(frameTime / TICK) -- (frameTime is a whole number of ticks)
 	for d = 1, ndirty do
 		local slot = dirty[d]
 		local h = hist[slot]
@@ -402,6 +400,19 @@ function Relay.step(now: number, dt: number)
 		end
 		local kind = kinds[slot]
 		local farEvery = kind.farEvery
+		local ts, xs, ys, zs, yaws, fls = h.t, h.x, h.y, h.z, h.yaw, h.fl
+		-- kinds with stop repeats: ages between whole ticks (see the header), so that a sample
+		-- decodes to one time from every packet; the others: as since v0.1
+		local whole = kind.restRepeats > 0
+		if reps and entRep[slot] then
+			from = last - (REPEAT_SAMPLES - 1)
+			if from < oldest then
+				from = oldest
+			end
+			while from < last and now - ts[from % cap + 1] >= REPEAT_MAX_AGE do
+				from += 1
+			end
+		end
 		local fullBit = if h.full then 2 else 0 -- the ring's own layout (a kind's rotation may change later)
 		-- the entity's own origin (nil: Config.origin); NaN = absolute form while clients may
 		-- not have its ORIGIN message yet
@@ -414,7 +425,6 @@ function Relay.step(now: number, dt: number)
 				originUntil[slot] = nil
 			end
 		end
-		local ts, xs, ys, zs, yaws, fls = h.t, h.x, h.y, h.z, h.yaw, h.fl
 		entFirst[slot] = nrec + 1
 		local vel = h.vel
 		local entAt = pos
@@ -443,7 +453,11 @@ function Relay.step(now: number, dt: number)
 				writeu8(scratch, pos, slot)
 				pos += 1
 			end
-			pos = writeDt(scratch, pos, round((frameTime - ts[p]) / TICK))
+			if whole then
+				pos = writeDt(scratch, pos, frameTick - round(ts[p] / TICK))
+			else
+				pos = writeDt(scratch, pos, round((frameTime - ts[p]) / TICK))
+			end
 			local fl = fls[p]
 			local tele = fl % 2 -- the sample's own flags hold the teleport bit only
 			if fullBit == 2 then
@@ -477,13 +491,18 @@ function Relay.step(now: number, dt: number)
 		relayed[slot] = last
 	end
 	recOff[nrec + 1] = pos
-	local anyVel = nvel > 0
-	local velBytes = 0
-	if anyVel then
+	if nvel > 0 then
 		counters.velocitySamples += nvel
 	end
+	return nvel
+end
 
-	-- 3. per receiver: memcpy ranges, split at MaxPacket, budget for mid/far
+-- Per receiver: memcpy ranges, split at MaxPacket, budget for mid/far. `dt` is the time the
+-- byte budgets are credited with (0 for a flush between two frames).
+local function send(dt: number, frameTime: number, wide: boolean, nvel: number)
+	local anyVel = nvel > 0
+	local reps = nrep > 0
+	local velBytes = 0
 	local maxPacket = Config.MaxPacket
 	writeu8(out, 0, TAG_FRAME)
 	writeu8(out, 1, if wide then 1 else 0)
@@ -511,7 +530,8 @@ function Relay.step(now: number, dt: number)
 				continue
 			end
 			local tier = tiers[slot] or 1
-			if tier == 1 then
+			if tier == 1 or (reps and tier < 4 and entRep[slot]) then
+				-- (a repeat goes to mid and far receivers like a near record: see the header)
 				local ef = entFirst[slot]
 				if ef ~= runLast + 1 then
 					if runLast >= runFirst then
@@ -567,6 +587,135 @@ function Relay.step(now: number, dt: number)
 			count("Tide.Velocity.bytes", velBytes)
 		end
 	end
+end
+
+-- Forgets the last relay's repeat flags.
+local function clearReps()
+	for i = 1, nrep do
+		entRep[repSlots[i]] = false
+	end
+	nrep = 0
+end
+
+function Relay.step(now: number, dt: number)
+	local count = State.count
+	sending = true
+	if nrep > 0 then
+		clearReps()
+	end
+
+	-- 1. which entities have new samples; frame time = max(now, newest sample) on the 0.5 ms grid
+	ndirty = 0
+	local frameTime = now
+	for k = 1, count do
+		local slot = active[k]
+		local h = hist[slot]
+		if h.last > relayed[slot] then
+			ndirty += 1
+			dirty[ndirty] = slot
+			local t = h.t[h.last % h.cap + 1]
+			if t > frameTime then
+				frameTime = t
+			end
+		end
+	end
+	-- everything bumped since the last relay is among them: nothing is left for a flush
+	local nlate = State.lateN
+	if nlate > 0 then
+		for i = 1, nlate do
+			local slot = lateList[i]
+			if late[slot] then
+				late[slot] = false
+			end
+		end
+		State.lateN = 0
+	end
+	-- stop repeats the Ticker asked for: the last samples again, unless newer ones go anyway
+	local nrest = State.restN
+	if nrest > 0 then
+		for i = 1, nrest do
+			local slot = restList[i]
+			if restDue[slot] then
+				restDue[slot] = false
+				local h = hist[slot]
+				if h ~= nil and owner[slot] == false and h.n > 0 and h.last == relayed[slot] then
+					local t = h.t[h.last % h.cap + 1]
+					if now - t < REPEAT_MAX_AGE then
+						ndirty += 1
+						dirty[ndirty] = slot
+						nrep += 1
+						repSlots[nrep] = slot
+						entRep[slot] = true
+						if t > frameTime then
+							frameTime = t
+						end
+					end
+				end
+			end
+		end
+		State.restN = 0
+		counters.restRepeats += nrep
+	end
+
+	interestAcc += dt
+	if interestAcc >= Config.InterestEvery then
+		interestAcc = 0
+		recomputeInterest()
+	end
+
+	if ndirty == 0 then
+		sending = false
+		return
+	end
+	frameTime = ceil(frameTime / TICK) * TICK
+	lh = LH.api
+	local wide = State.maxSlot > 255
+
+	-- 2. encode every new sample once; 3. each receiver's packets
+	local nvel = encode(now, frameTime, wide)
+	send(dt, frameTime, wide, nvel)
+	sending = false
+end
+
+-- Tide.flush: relays, now, the samples of the entities bumped since the last relay (State.late)
+-- to the receivers a frame's relay would send them to. The frame's own relay then finds them
+-- relayed. Returns the number of entities sent.
+function Relay.flush(now: number): number
+	local nlate = State.lateN
+	if nlate == 0 or sending then
+		return 0
+	end
+	sending = true
+	if nrep > 0 then
+		clearReps()
+	end
+	ndirty = 0
+	local frameTime = now
+	for i = 1, nlate do
+		local slot = lateList[i]
+		if late[slot] then
+			late[slot] = false
+			local h = hist[slot]
+			if h ~= nil and h.last > relayed[slot] then
+				ndirty += 1
+				dirty[ndirty] = slot
+				local t = h.t[h.last % h.cap + 1]
+				if t > frameTime then
+					frameTime = t
+				end
+			end
+		end
+	end
+	State.lateN = 0
+	local sent = ndirty
+	if sent > 0 then
+		frameTime = ceil(frameTime / TICK) * TICK
+		lh = LH.api
+		local wide = State.maxSlot > 255
+		send(0, frameTime, wide, encode(now, frameTime, wide))
+	end
+	sending = false
+	return sent
 end
 
 return Relay

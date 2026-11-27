@@ -518,6 +518,9 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	State.forceTele[slot] = false
 	State.forceCut[slot] = false
 	State.still[slot] = false
+	State.restLeft[slot] = 0
+	State.restDue[slot] = false
+	State.late[slot] = false
 	State.tpVel[slot] = nil
 	State.audience[slot] = nil
 	State.markUntil[slot] = nil
@@ -569,6 +572,9 @@ function Server.remove(slot: number)
 		State.bumpN -= 1
 	end
 	State.forceCut[slot] = nil
+	State.restLeft[slot] = nil
+	State.restDue[slot] = nil
+	State.late[slot] = nil
 	unwatch(slot)
 	Mirror.unlink(slot)
 	Anim.onRemove(slot)
@@ -918,6 +924,8 @@ function Server.setOwner(slot: number, player: any?)
 		State.bumpN -= 1
 	end
 	State.forceCut[slot] = false
+	State.restLeft[slot] = 0
+	State.restDue[slot] = false
 	unwatch(slot)
 	State.endTeleport(slot)
 	State.owner[slot] = player or false

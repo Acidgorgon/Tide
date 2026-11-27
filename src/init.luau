@@ -45,6 +45,9 @@
 --     velocity = true   every sample carries the body's linear velocity and spin
 --     apply = "none"    Tide does not move the model on clients: game code draws it
 --     lock = true       Roblox stops replicating the body's motion (Tide's stream is the only one)
+--     restRepeats = 2   the stop sample and the two samples before it go out again on the next 2
+--                       ticks (the default for velocity kinds; 0 for the others): a lost packet
+--                       does not leave receivers carrying a stopped body on
 --   server: Tide.bump(model) -> stamp     -- sample now, out of tick (after a kick): a "cut"
 --           Tide.at(model, t) -> CFrame, velocity, spin     Tide.latest(model) -> CFrame, velocity, spin, stamp
 --   client: Tide.latest(model) -> CFrame, velocity, spin, stamp   (newest received sample)

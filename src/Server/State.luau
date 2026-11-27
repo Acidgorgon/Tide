@@ -42,6 +42,16 @@ State.bumped = {} :: { [number]: boolean } -- bumped while physics was stepping:
 State.bumpN = 0 -- entities in `bumped`
 State.inSim = false -- between PreSimulation and Tide's own step of the frame (poses are not final)
 State.frameT = 0 -- server time of Tide's last frame step (the time the poses that stand now were reached)
+-- Tide.flush: entities bumped at once since the last relay (their samples wait for a relay)
+State.late = {} :: { [number]: boolean }
+State.lateList = {} :: { number } -- the slots flagged in `late`, 1 .. lateN (entries may be stale: check the flag)
+State.lateN = 0
+
+-- stop redundancy (kind option restRepeats): the last samples of a resting entity go out again
+State.restLeft = {} :: { [number]: number } -- unchanged ticks that still repeat them
+State.restDue = {} :: { [number]: boolean } -- repeat them with this frame's relay
+State.restList = {} :: { number } -- the slots flagged in `restDue`, 1 .. restN (entries may be stale: check the flag)
+State.restN = 0
 
 -- pending server teleport of a client-owned entity (until the owner's flagged upload)
 State.tpPending = {} :: { [number]: boolean }
@@ -132,6 +142,8 @@ State.counters = {
 	bumps = 0, -- Tide.bump calls that sampled at once
 	bumpsDeferred = 0, -- Tide.bump calls made while physics was stepping (sampled at that frame's step)
 	serverLocks = 0, -- server-owned entities given a lock (kind option lock)
+	restRepeats = 0, -- stop repeats sent: entities x ticks (kind option restRepeats)
+	flushes = 0, -- Tide.flush calls that sent something
 }
 
 State.onSuspicious = nil :: ((player: any, reason: string) -> ())?
