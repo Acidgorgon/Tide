@@ -63,6 +63,44 @@ records until the end of the buffer:
 Header: 10 bytes per packet. Each record is encoded once per frame and copied as-is into every
 receiver's packet. An entity's several samples in one frame are several records.
 
+### Velocity records
+
+Only for kinds with `velocity = true` (v0.5, [guide](/guide/physics-bodies)). Slot 0 is never an
+entity, so it works as an escape: a record that starts with slot 0 is a velocity record.
+
+```
+slot = 0   u8 (u16 if wide)      escape
+hdr        u8                    bit 0 VEL        a linear velocity follows (else it is zero)
+                                 bit 1 SPIN       a spin follows (else it is zero)
+                                 bit 2 VEL_WIDE   the velocity is 3 × f32
+                                 bit 3 SPIN_WIDE  the spin is 3 × f32
+                                 bit 4 CUT        the motion changes abruptly here (Tide.bump)
+                                 bits 5-7         zero
+slot       u8 (u16 if wide)      the entity
+dt         u8 (255: + u16)
+sample                           8 B core (+ extras)
+[velocity] 3 × i16               x, y, z in 1/32 stud/s (±1023.97), or 3 × f32 when wide
+[spin]     3 × i16               x, y, z in 1/64 rad/s (±511.98), or 3 × f32 when wide
+```
+
+A vector is left out when it quantizes to zero, and sent as `f32` when a component is out of the `i16`
+range (a non-finite component is sent as 0). The record describes its own length, so a client skips
+one for a slot it doesn't know. A client stops reading the packet (counted as `badPacket`) on a header
+with bits 5 to 7 set, on a second slot 0 after the header, and on a record longer than what is left.
+The server's history holds the dequantized values.
+
+| Velocity record (u8 slot, u8 dt) | Bytes |
+|---|---|
+| full rotation, velocity and spin (a ball in flight) | **28** |
+| yaw only, velocity and spin | 24 |
+| full rotation, velocity or spin only | 22 |
+| full rotation, at rest (both zero) | 16 |
+| yaw only, at rest | 12 |
+| wide velocity or wide spin | +6 each |
+| wide slots | +2 |
+
+Records of other kinds are unchanged, and the two forms mix freely in one packet.
+
 ## Upload (client → server)
 
 ```
@@ -88,7 +126,7 @@ instances referenced by index (1-based; 0 = none).
 | 11 | REMOVE | server → client | `u16 slot` |
 | 12 | OWNER | server → client | `u16 slot, f64 owner userId` |
 | 13 | TELEPORT | server → owner | `u16 slot, f32 x, y, z, qx, qy, qz, qw, u8 has velocity, [f32 vx, vy, vz]` |
-| 14 | HELLO | server → client | `u8 version, f64 origin x, y, z, u8 flags (bit 0 lock, bit 1 animations, bit 2 animations owner-local, bit 3 ownerEase, bits 4-5 ownerStart (0 drawn, 1 latest, 2 server), bit 6 rebindStreamed), u8 upload redundancy, u8 kind count`, then per kind: `u8 id, u8 name length, name, f32 rate, u8 flags (bit 0 full, bit 1 animations off, bit 2 state-only: motion = false), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise, f32 maxFall`; with animations on, then `u16 folder instance index, u16 folder id count, u32 folder checksum` |
+| 14 | HELLO | server → client | `u8 version, f64 origin x, y, z, u8 flags (bit 0 lock, bit 1 animations, bit 2 animations owner-local, bit 3 ownerEase, bits 4-5 ownerStart (0 drawn, 1 latest, 2 server), bit 6 rebindStreamed), u8 upload redundancy, u8 kind count`, then per kind: `u8 id, u8 name length, name, f32 rate, u8 flags (bit 0 full, bit 1 animations off, bit 2 state-only: motion = false, bit 3 velocity records, bit 4 apply = "none" on the server), f32 buffer, f32 extrapolate, f32 keepAlive, f32 maxSpeed, f32 maxRise, f32 maxFall`; with animations on, then `u16 folder instance index, u16 folder id count, u32 folder checksum` |
 | 15 | READY | client → server | (none) |
 | 16 | RESEND | client → server | `u8 count, count × u16 slot` (models that haven't streamed in; at most 64 slots, in the client's list order; with more missing, each RESEND takes the next 64, wrapping around) |
 | 17 | OWNERPOSE | server → client | `u16 slot, f64 stamp, f32 x, y, z, qx, qy, qz, qw, f32 vx, vy, vz` (v0.4, `Config.ownerStart = "server"` only: in the same message right after an OWNER to a player; the new owner starts its copy there, carried to now; other clients ignore it) |
@@ -97,7 +135,11 @@ instances referenced by index (1-based; 0 = none).
 The protocol version is `4` (3: animations; 4: timeline state). v0.4 keeps it: its HELLO bits are 0
 and tags 17 and 18 are not sent unless a game turns those features on. v0.4.1 keeps it too: the server
 also sends an ADD (with its ORIGIN, if any) to a client coming back into an entity's audience, and a
-client that receives an ADD for an entity it has, without the model, keeps the model it has. A client that sees a different version
+client that receives an ADD for an entity it has, without the model, keeps the model it has. v0.5 keeps
+it as well: velocity records, the HELLO kind bits 3 and 4, the state types 13 and 14 and the member
+lists in SCHEMA appear only for kinds that use them, so a game without them sends the bytes of v0.4.2
+(checked against a recorded session in `tests/test_golden.luau`). A v0.4 client would not understand
+a velocity record or a member payload; like every release, client and server ship together. A client that sees a different version
 warns in the output. With `Config.animations` off and no `Tide.state` declaration, no field or message
 below is sent and every byte above is as in version 2 (apart from the version byte).
 
@@ -180,8 +222,10 @@ A field is `u8 id` (bit 7 set: the field's default, no value follows), then the 
 | `ref` | `u16 slot` (0 = nil) |
 | `enum` | `u8` index into the values, 1-based (0 = nil) |
 | `yaw` | `u16` angle × 65536 / 2π, of the direction in the XZ plane |
-| `pos` | `3 × f32` |
+| `pos` (`vector`) | `3 × f32` |
+| `cframe` | `3 × f32` position, `u32` rotation (the smallest-three quaternion of a sample's full rotation) |
 | `event` | the payload by its type (nothing without one) |
+| event payload with named members | presence bits (`u8` for up to 8 members, `u16` up to 16, else `u32`; bit `i - 1`: member `i` in name order has a value), then the values of the members present, each by its type. A member not present is its type's default. Bits beyond the member count make the message malformed (`stateBad`) |
 
 The STATE message goes in the same buffer (and the same remote call) as the frame's ANIM message: one
 call per receiver per frame. Groups are encoded once per frame and copied for each receiver that may
@@ -198,9 +242,12 @@ sorted by name):
 ```
 u8   name length, name
 u8   type             1 bool, 2 u8, 3 u16, 4 i16, 5 f32, 6 f64, 7 time, 8 ref, 9 enum, 10 event, 11 yaw, 12 pos
+                      ("vector" is 12 too), 13 cframe (v0.5)
 u8   flags            bits 0-1 to (0 all, 1 owner, 2 others, 3 server), bit 2 arrival, bit 3 mirror,
                       bit 4 mirror on player, bit 5 default, bit 6 mirrorNil
-[event]              u8 payload type (0 none)
+[event]              u8 payload type (0 none; 14: named members, v0.5, followed by
+                      u8 count, count × (u8 name length, name, u8 type, [enum: u8 count,
+                      count × (u8 length, string)]), members sorted by name)
 [enum, enum payload] u8 count, count × (u8 length, string)
 [mirror]             u8 length, attribute name
 [mirrorNil]          u8 tag (1 string, 2 number, 3 boolean), then u8 length + string | f64 | u8
@@ -211,6 +258,7 @@ u8   flags            bits 0-1 to (0 all, 1 owner, 2 others, 3 server), bit 2 ar
 |---|---|
 | a group with one `bool` / `ref` / `time` change | 7 / 8 / 8 |
 | owner change with its i-frame window (`ref`, `time`, `time`, `ref`) | 17 |
+| a kick event with `pos`, `vector` and `ref` members present | 33 |
 | one change sent alone (tag, header, group) | 18–19 |
 
 Byte counts on this page are payload only; Roblox adds its own per-call overhead on top.

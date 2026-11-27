@@ -130,5 +130,28 @@ do
 			sink += off
 		end
 		print(string.format("Codec.write %6.1f ns/sample   Codec.read %6.1f ns/sample  (sink %d)", bestW / N * 1e9, bestR / N * 1e9, sink % 7))
+
+		-- velocity + spin of a velocity record (v0.5): 12 B narrow
+		local vbuf = buffer.create(N * 12)
+		bestW, bestR = math.huge, math.huge
+		sink = 0
+		for _ = 1, ROUNDS do
+			local t0 = os.clock()
+			local hdr = 0
+			for i = 1, N do
+				local _
+				_, hdr = Codec.writeMotion(vbuf, (i - 1) * 12, fx[i] * 0.1 + 0.5, fy[i], fz[i] * 0.1 + 0.5, fyaw[i] * 9 + 0.5, fy[i] + 0.5, fyaw[i] + 4)
+			end
+			local t1 = os.clock()
+			for i = 1, N do
+				local _, vx, vy, vz, wx, wy, wz = Codec.readMotion(vbuf, (i - 1) * 12, 3)
+				sink += vx + vy + vz + wx + wy + wz
+			end
+			local t2 = os.clock()
+			bestW = math.min(bestW, t1 - t0)
+			bestR = math.min(bestR, t2 - t1)
+			sink += hdr
+		end
+		print(string.format("Codec.writeMotion %6.1f ns/sample   Codec.readMotion %6.1f ns/sample  (sink %d)", bestW / N * 1e9, bestR / N * 1e9, sink % 7))
 	end
 end

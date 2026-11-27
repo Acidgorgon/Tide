@@ -18,7 +18,9 @@
 -- that time: vx, vy, vz, wx, wy, wz. Between two samples whose velocities explain the segment
 -- both are blended between the samples' own (exact under constant acceleration); otherwise (a
 -- cut, a fallback segment) the velocity is the drawn path's derivative, which carries the
--- positions' quantization (up to ~2 * (1/32 stud) / segment length).
+-- positions' quantization (up to (1/32 stud) / segment length per axis at the segment's end:
+-- 0.94 studs/s at 30 Hz). A cut closer than 12.5 ms behind a sample holds that sample's
+-- velocity instead.
 
 local Ring = require(script.Parent.Ring)
 
@@ -41,6 +43,10 @@ local motion = Interp.motion
 local TOL = 0.06
 local TOL_REL = 0.125
 local TOL_REL_CUT = 0.5
+-- A segment that ends in a cut and is shorter than this (seconds) reports its start velocity
+-- instead of the path's slope: the slope's error is (1/32 stud) / length per axis, holding
+-- the velocity costs acceleration * length (gravity: the two meet near 12 ms).
+local CUT_HOLD = 0.0125
 
 local PI = math.pi
 local TAU = 2 * math.pi
@@ -237,7 +243,11 @@ function Interp.sample(
 	local z = h00 * z0 + h10 * m0z + h01 * z1 + h11 * m1z
 	if vel then
 		local cut = fls[p1] >= 8
-		if fromVelocity and not cut then
+		if cut and h < CUT_HOLD then
+			-- a cut right behind a sample (a bump in the frame the entity was sampled in): the
+			-- old velocity holds up to it; the slope of so short a segment is quantization noise
+			motion[1], motion[2], motion[3] = r.vx[p0], r.vy[p0], r.vz[p0]
+		elseif fromVelocity and not cut then
 			-- the two samples' velocities explain the segment: blended between them (exact
 			-- under constant acceleration, and free of the positions' quantization)
 			local vxs, vys, vzs = r.vx, r.vy, r.vz

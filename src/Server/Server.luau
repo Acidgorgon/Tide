@@ -777,9 +777,9 @@ function Server.bump(target: any): number?
 		return nil
 	end
 	local c = State.counters
-	local lh = LH.api
-	if lh then
-		lh.count("Tide.Bump")
+	local count = LH.counter
+	if count then
+		count("Tide.Bump")
 	end
 	if State.inSim then
 		if not State.bumped[slot] then

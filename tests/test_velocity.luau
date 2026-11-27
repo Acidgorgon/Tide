@@ -519,6 +519,11 @@ return function(T)
 		T.eq(vBefore.Z, 0, "just before the kick: no z yet")
 		T.eq(cfBefore.Position.Z, 0, "just before the kick: on the old line")
 		T.near(vAfter.Z, 60, 0.5, "after the kick")
+		-- between the two cuts (1 ms apart, the pose did not move): the first kick's velocity
+		-- holds, not the slope of a segment that short
+		local _, vBetween = cts[1].at(view, (cuts[1].t + cuts[2].t) / 2)
+		T.eq(vBetween.Z, 90, "between two cuts a millisecond apart: the first one's velocity")
+		T.eq(vBetween.X, 0)
 		T.eq(cts[1].stats().applyErrors, 0)
 	end)
 

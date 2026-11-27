@@ -34,5 +34,18 @@ so the overlay's top players by bytes include Tide's traffic.
 | `Tide.Upload` | client | sampling and sending the entities this client owns |
 | `Tide.Render` | client | drawing remote entities (PreRender) |
 
+## Counters
+
+For [velocity kinds](/guide/physics-bodies) (v0.5), through `Lighthouse.count`. Nothing is counted for
+games without one.
+
+| Counter | Side | Counts |
+|---|---|---|
+| `Tide.Velocity.samples` | server | samples of velocity kinds encoded this frame |
+| `Tide.Velocity.samples` | client | velocity records received |
+| `Tide.Velocity.bytes` | server | bytes of those records sent, over all receivers (part of the `Relay` channel's total, not on top of it) |
+| `Tide.Bump` | server | `Tide.bump` calls |
+
 `Tide.stats()` keeps working as before and counts the same bytes (`relayBytes`, `inBytes`,
-`uploadBytes`).
+`uploadBytes`), and the same things as these counters (`velocitySamples`, `velocityBytes`, `bumps`,
+`bumpsDeferred` on the server, `velocityRecords` on a client).

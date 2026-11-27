@@ -38,6 +38,20 @@ Tide.drawn(model)    -- the CFrame drawn this frame
 Tide.velocity(model) -- drawn velocity, studs/s
 Tide.latest(model)   -- newest sample received, no delay
 Tide.at(model, t)    -- pose at server time t from this client's buffer
+Tide.timeOf(model)   -- the server time this entity is drawn at
+```
+
+`Tide.timeOf(model)` is `now - Tide.delay(model)` for an entity Tide buffers, now for your own, and
+the function you gave to `Tide.clock` if you gave one. Each entity has its own: two players' characters
+are drawn at slightly different server times, and all server-owned entities of one kind share a delay.
+`Tide.at(a, Tide.timeOf(b))` is where `a` was when `b` was where you see it.
+
+For kinds with `velocity = true` ([Balls and projectiles](/guide/physics-bodies)), samples carry the
+body's velocity and spin, and both calls return them:
+
+```lua
+local cf, velocity, spin, stamp = Tide.latest(ball)   -- the newest sample and its server time
+local cf, velocity, spin = Tide.at(ball, t)           -- the path at server time t
 ```
 
 ## Hit checks with `Tide.at`
@@ -78,6 +92,10 @@ only for something Tide doesn't know.
 `Tide.latest(target)` returns the newest accepted sample: for a locked player that is also where the
 server's copy of the character stands.
 
+For a velocity kind the server's `Tide.at(ball, t)` also returns the velocity and the spin at `t`, and
+`Tide.latest(ball)` the newest sample's velocity, spin and server time: "how fast was the ball going
+when the keeper saw it?" is one call.
+
 ::: tip How much history is there?
 128 samples per entity: about 2 s for a 60 Hz player, 4 s for a 30 Hz bot (longer when it stands still,
 since unchanged samples are skipped). Keep `MAX_REWIND` well inside that; `Config.MaxBackdate` (1 s) is a
@@ -110,6 +128,7 @@ local newest, t = venue:latest(playerId)
 venue:setOwner(playerId, player.UserId) -- applied by Tide's VM at the start of its next frame
 venue:teleport(playerId, kickoffSpot)
 venue:markTeleport(playerId, spot)      -- for a move this VM makes itself
+venue:bump(ballKey)                     -- Tide.bump, after this VM kicked the body
 ```
 
 :::
@@ -125,7 +144,10 @@ Limits:
 - Intents are applied a frame later, with no reply. Read the result back (`Tide.owner` in Tide's VM,
   `venue:latest` here) instead of assuming it. Intents for keys not linked at that time are dropped and
   counted (`linkUnknown`), as are ones that fail (`linkBad`).
-- Each mirrored sample costs one `SharedTable` write (a 73-byte string) plus one for the entity's
+- Each mirrored sample costs one `SharedTable` write (a 73-byte string; 121 bytes for a velocity kind,
+  whose `venue:at` and `venue:latest` return the velocity and spin as well) plus one for the entity's
   newest index; link only what other VMs read.
+- `venue:bump(key)` is applied at the start of Tide's next frame, so the sample is up to a frame later
+  than a `Tide.bump` made in Tide's VM, and it returns no stamp.
 - `SharedTable`'s cross-VM behaviour (atomic `increment`, what a parallel phase sees of writes made in
   the serial phase) is taken from Roblox's documentation and has not been checked in Studio yet.

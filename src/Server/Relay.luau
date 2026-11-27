@@ -561,9 +561,10 @@ function Relay.step(now: number, dt: number)
 	curPlayer = nil
 	if anyVel then
 		counters.velocityBytes += velBytes
-		if lh then
-			lh.count("Tide.Velocity.samples", nvel)
-			lh.count("Tide.Velocity.bytes", velBytes)
+		local count = LH.counter
+		if count then
+			count("Tide.Velocity.samples", nvel)
+			count("Tide.Velocity.bytes", velBytes)
 		end
 	end
 end

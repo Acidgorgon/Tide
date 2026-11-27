@@ -265,9 +265,9 @@ function Receive.packet(payload: any, arrival: number)
 	end
 	if nvel > 0 then
 		counters.velocityRecords += nvel
-		local lh = LH.api
-		if lh then
-			lh.count("Tide.Velocity.samples", nvel)
+		local count = LH.counter
+		if count then
+			count("Tide.Velocity.samples", nvel)
 		end
 	end
 	if pos ~= n then

@@ -58,6 +58,7 @@ export type Field = {
 	history: number,
 	event: boolean,
 	members: { Field }?, -- payload with named members (code STRUCT): its members, by name
+	label: string?, -- a member's name in error messages ("Tide.fire: Kick.Position")
 	refMembers: { Field }?, -- those of type ref (nil when none)
 }
 
@@ -271,7 +272,7 @@ function StateSchema.checkStruct(f: Field, value: any, level: number, stamp: num
 		if code == CODES.ref then
 			v = ref(v)
 		else
-			v = normalize(m, code, v, level + 1, `Tide.fire: {f.name}.{m.name}`)
+			v = normalize(m, code, v, level + 1, m.label or m.name)
 			if code == CODES.time and v ~= nil then
 				v = quantizeTime(v, stamp)
 			end
@@ -450,6 +451,7 @@ function StateSchema.build(kind: string, decl: { [string]: any }): Schema
 				m.event = false
 				m.default = defaultOf(mcode)
 				m.values, m.index = nil, nil
+				m.label = `Tide.fire: {name}.{mname}`
 				if mcode == CODES.enum then
 					local ok, values, index = pcall(enumValues, mopts.values)
 					if not ok then

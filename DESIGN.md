@@ -285,7 +285,8 @@ and tackle statuses) lands on the same timeline as the body. Design from the res
 - State-only kinds (`motion = false`): no sampling, relay, upload, lock, drawing or anchoring; never
   culled; state and history only. For the ball until the ball channel exists.
 - Not done (proposal 3.8 and later): owner-local `Tide.predict`, a latest-value field mode on the
-  unreliable stream, a ball channel.
+  unreliable stream. (The ball channel came in v0.5, below, with the reasons the other two are still
+  not built.)
 
 ## Venues, owner changes, other VMs (v0.4)
 
@@ -361,3 +362,166 @@ not needed either: the moving window bounds the cost of unanswered asks to 130 B
 The server sends the same bytes as v0.4.0 for entities without an audience, and the client's RESEND
 only differs with more than 64 models missing (where v0.4.0 starved). Tests: `tests/test_resend.luau`
 (5 venues x 22 bodies, a hub viewer cutting to the newest: 0 / 22 on v0.4.0, 22 / 22 within 0.5 s).
+
+## Physics bodies, richer state (v0.5)
+
+Goal: the ball. Strike's server simulates it and sent its own snapshot remote (56 B per ball sample:
+position, velocity, spin, time) next to a state-only Tide entity; clients predict and draw it
+themselves. v0.5 puts the ball's motion on Tide's stream and timeline with what a predictor needs,
+and lets one event carry a kick. Everything is opt-in and protocol 4 stays: velocity records, HELLO
+kind bits 3 and 4, state types 13 and 14 and SCHEMA member lists appear only for kinds that use them.
+`tests/test_golden.luau` replays a recorded v0.4.2 session (players, bots, full rotation, origins,
+audiences, animations, state; 2229 remote calls, 88292 B) and compares every byte.
+
+### Velocity kinds
+
+- Kind option `velocity = true` (server-owned entities only: an owner at `Tide.add` or
+  `handle:setOwner` is an error, uploads carry no velocity; not with `motion = false`). The entity's
+  rings (server history, client buffer, link readers) get six more number arrays: vx, vy, vz, wx, wy,
+  wz. The ticker reads `AssemblyLinearVelocity` / `AssemblyAngularVelocity` of the root with the pose,
+  on the kind's tick, and stores them **quantized as receivers decode them** (1/32 stud/s, 1/64
+  rad/s), like positions. A pose that stands still with a new velocity is a new sample (a kick before
+  physics moved the body); a body at rest sends the stop sample and keep-alives only.
+- Record: `slot 0 | hdr | slot | dt | sample | [velocity] | [spin]`. Slot 0 is never an entity (slots
+  start at 1), so it is the escape that keeps every other record byte for byte as it was. `hdr`: bit 0
+  VEL, bit 1 SPIN (a vector that quantizes to zero is left out), bit 2 / 3 the wide form (3 x f32 when
+  a component leaves the i16 range; non-finite as 0), bit 4 CUT, bits 5-7 zero. The record states its
+  own length, so a client skips one for a slot it does not know yet (ADD is reliable, samples are
+  not). Reserved bits, a second slot 0 and truncation stop the packet (`badPacket`), never throw.
+  Sizes with a u8 slot and u8 dt: 28 B in flight with full rotation and spin, 24 B yaw only, 22 B with
+  one vector, 16 B / 12 B at rest. The game's own snapshot was 56 B.
+- Encoded once per frame into the relay scratch and memcpy'd per receiver like any record
+  (`Codec.writeMotion` 63 ns, `readMotion` 65 ns native, next to 35 / 48 ns for the core sample).
+  Mid and far tiers thin as before; cuts pass the thinning like teleports. The byte budget can still
+  drop a mid or far record, a cut included: a ball everyone watches wants `near = math.huge`, and
+  `farEvery = 1` plus a `Tide.focus` for receivers without a character (no position: always "far").
+- Interpolation (`Shared/Interp`, the same on both sides and in link readers). For a velocity ring the
+  Hermite tangents are the samples' velocities when they explain the segment
+  (`|(v0 + v1) / 2 * h - d| <= 0.06 + 0.125 |d|` studs), which is exact for constant acceleration
+  between samples. When they do not (a bounce nobody flagged, a lost cut, a body moved by CFrame), the
+  segment falls back to tangents from positions, so a bad pair of velocities can never fling the path
+  out of its segment. A segment that ends in a CUT arrives with constant acceleration from its start
+  velocity (`m0 = v0 h, m1 = 2d - m0`, or a straight line when v0 does not explain d); the cut
+  sample's new velocity only shapes what follows. Past the newest sample: a straight line at that
+  sample's velocity for the caller's bound (no speed clamp: the values are the server's). Tide does
+  not integrate gravity or drag; a predictor starts from `Tide.latest`.
+- The velocity `Tide.at` returns is blended between the two samples' own velocities where they
+  explain the segment (free of position quantization), else the path's slope. The slope at the end of
+  a cut segment carries the positions' grid: up to (1/32 stud) / h per axis (0.94 studs/s at 30 Hz).
+  A cut less than 12.5 ms behind a sample (a bump in the frame the entity was sampled in) holds the
+  start velocity instead: below that length gravity over the segment is smaller than the slope's noise.
+  Spin is blended between samples and held up to a cut.
+- Measured on the mock (`tests/test_velocity.luau`): ball in flight at 30 Hz, 30 ms +- 4 ms one-way,
+  read at the drawn time: within 0.0131 studs and 0.086 studs/s of the true trajectory. Bounces and
+  kicks with nothing bumped: at most 0.31 studs from the truth, 0.95 studs with 30 % loss.
+
+### Tide.bump
+
+`Tide.bump(model)` / `handle:bump()` samples a server-owned entity out of tick and returns the
+sample's server time (the stamp for the `Tide.fire` of the same moment). For velocity rings the
+sample carries CUT. The server's frame has two regimes, told apart by a `PreSimulation` connection
+that sets `State.inSim` (cleared after the ticker ran in Tide's `PostSimulation` step):
+
+- Outside (remote handlers, `Heartbeat`, resumed threads): the poses that stand are the ones the last
+  frame ended on, so the sample is taken at once and stamped with that frame's time, or 1 ms (two
+  ticks of the wire's grid) after the entity's newest sample or held tick when that is later. Stamps
+  stay strictly increasing per entity, so history stays append-only (links rely on it) and receivers
+  never see two samples at one time.
+- Inside (between `PreSimulation` and Tide's step): physics is about to move the body, so sampling now
+  would record a pose a frame old with a velocity physics has not applied. The entity is marked and
+  sampled at this frame's step whatever the kind's tick (one sample per frame at most); the call
+  returns its own time.
+- A bump with nothing changed samples nothing (and leaves the idle bookkeeping to the ticks). Bumps
+  after Tide's step leave with the next frame's packet. `Relay` takes `max(now, newest stamp)` as the
+  packet's base time, so a stamp a few ms ahead (many bumps in one frame) still encodes a
+  non-negative age; `Tide.set` / `fire` accept stamps up to 2 ms ahead without counting a clamp.
+- Kinds without `velocity` get a plain out-of-tick sample.
+
+### Drawing it yourself
+
+- `apply = "none"` in the server's declaration travels in the kind's HELLO flags (bit 4). A client
+  whose kind still has the default apply takes it (and gives it back when the server changes its
+  mind: roots are anchored again); a client's own `apply` wins. Tide then neither moves nor anchors
+  the model, and keeps buffering, the kind's delay and `Tide.drawn`.
+- Client `Tide.at(model, t, extrapolate?)` reads the buffered path at any server time, with velocity
+  and spin for velocity kinds; `Tide.latest(model)` returns the newest sample with velocity, spin and
+  its stamp (plain kinds: the CFrame alone, as before). The server's `Tide.at` / `Tide.latest` return
+  the same shapes from history, and `venue:at` / `venue:latest` / `venue:bump` through links (a
+  velocity sample is a 121 B packed string).
+- Client kind option `onSample(model, t, cframe, velocity, spin, cut)`: called inside the receive for
+  each accepted sample (arrival order; pcall, `applyErrors`), for renderers that keep their own
+  buffer. It allocates its arguments; kinds without it allocate nothing.
+- Clocks. `Tide.timeOf(model)` on a client is, in order: now for an own entity; the function given
+  to `Tide.clock`; `now - kind.buffer` for a state-only entity; `now - delay` of the stream the
+  entity is buffered with (per entity for client-owned ones, per kind for server-owned ones).
+  Monotonic per entity. `Tide.clock` now also applies to motion entities: it moves when the entity's
+  state applies and what `timeOf` answers, and nothing else. A ball next to a body is
+  `Tide.at(ball, Tide.timeOf(body))`.
+
+### Server-owned bodies and Roblox's replication
+
+Kind option `lock = true`: each entity gets a near-massless part (`TideLocker`, RootPriority 126)
+welded to its root inside a `Camera` (`TideLock`) parented to the root. Cameras created by the server
+and their descendants do not replicate, the locker wins the assembly root, and clients have no root
+to replicate the motion against; the root's network owner is set to the server. Unlike the player
+lock nothing is moved: physics simulates the body as before. This cannot be tested on the mock
+(which only checks the instances, the weld and the cleanup); the nine checks are listed in
+`Server/Lock.luau` and in the guide. Default off. Without it the documented pattern is the old one:
+Roblox replicates the part, Tide anchors and draws over it (`apply = "cframe"`), or game code hides
+the replicated part locally and draws its own.
+
+### State: vectors, CFrames, payloads with members
+
+- `"vector"` is an alias of `"pos"` (code 12, the canonical name stays "pos", so checksums and bytes
+  are unchanged). `"cframe"` (code 13): 3 x f32 and the 4 B smallest-three quaternion of the sample
+  codec, 16 B, stored as decoded.
+- An event's `payload` may be a table of 1 to 32 named members (code 14, payload only; any value type
+  and `time`; enum members carry their values). Sorted by name. Wire: presence bits (u8 / u16 / u32 by
+  member count), then the present members' values; a member left out is its type's default and costs
+  nothing. A kick with position, velocity and kicker is a 33 B group. SCHEMA carries the member list,
+  so a client that declared nothing decodes it; the checksum covers members.
+- The server stores a frozen table (refs as models, times on the fire's grid). Clients hand out a
+  frozen table; ref members resolve to local models at read time and read nil once the entity is gone
+  (queued and applied values are scrubbed on removal, so a reused slot never resurrects a ref).
+- Malformed member payloads and schemas are counted (`stateBad`), never thrown.
+
+### Lighthouse
+
+`Lighthouse.count` (when the profiler has it): `Tide.Velocity.samples` (server: encoded; client:
+received), `Tide.Velocity.bytes` (server: bytes of velocity records sent, part of the `Relay`
+channel's total), `Tide.Bump`. The same numbers are in `Tide.stats()` (`velocitySamples`,
+`velocityBytes`, `bumps`, `bumpsDeferred`, `serverLocks`; client `velocityRecords`).
+
+### Allocation
+
+`tests/test_alloc.luau`: a velocity kind's server tick, bump, relay, the client's receive and
+`Interp.sample` allocate nothing per frame. The public reads (`Tide.at`, `Tide.latest`, `onSample`)
+allocate the CFrame and Vector3s they return.
+
+### Not done
+
+- A latest-value field mode on the unreliable stream (research note 3.7). Its one user would have
+  been the ball's velocity and spin, which now travel in the samples. For other state an unreliable
+  delta needs per-receiver resend bookkeeping (a lost latest value is wrong until the next change),
+  and reliable state already lands on the timeline with its stamp. No second candidate, so no second
+  transport.
+- Owner-local `Tide.predict`. Strike predicts the ball with its own physics from the newest sample;
+  `Tide.latest` (with stamp), `Tide.at` and `onSample` are the inputs it needs. A generic predictor
+  would have to know each game's forces.
+- Detecting an unflagged kick from the velocities alone and inserting a corner. The fallback to
+  position tangents already bounds the error to the segment; a detector would guess where in the
+  segment the kick happened.
+- Moving the simulated body into a non-replicated container with a replicated stand-in. Clients bind
+  entities by model instance, so the registered model must replicate; `lock` is the in-place answer
+  and has to pass its Studio checks first.
+
+### Limits
+
+- A client that joins while a body rests gets its first sample with the next keep-alive (<= 0.5 s).
+- An immediate bump is stamped with the last frame's time, up to a frame before the call. Pose and
+  stamp agree; the kick's event should use the returned stamp, not now.
+- A lost cut and an unbumped kick degrade to the position-only path for one segment.
+- Pivot-only models have no velocity and cannot be locked.
+- Needs Studio: everything about `lock`; that `PreSimulation` fires before `Stepped` handlers and
+  physics in the server's frame (the bump regimes rest on it); `AssemblyAngularVelocity` of a rolling
+  ball against the game's own spin model.

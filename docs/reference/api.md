@@ -58,14 +58,17 @@ Up to 255 kinds; names under 64 characters. Errors on an unknown option or a val
 | `maxRise` | number | 60 | server | studs/s upwards (client-owned speed check; also caps client extrapolation) |
 | `keepAlive` | number | 0.5 | server | seconds between samples of an idle entity (server-owned samples and client uploads) |
 | `teleportDistance` | number | `math.huge` | server | studs: a server-owned sample this far from the previous one is flagged a teleport (receivers snap instead of sweeping). For jumps game code makes without `handle:teleport` |
-| `apply` | `"cframe"` \| `"none"` \| `(model, CFrame) -> ()` | `"cframe"` | client | how a client applies the drawn pose |
+| `velocity` | boolean | `false` | server | samples carry the root's linear velocity and spin, and `Tide.at` / `Tide.latest` return them ([Balls and projectiles](/guide/physics-bodies)). Server-owned entities only: an owner is an error. Not with `motion = false` |
+| `lock` | boolean | `false` | server | server-owned entities: a non-replicated assembly root stops Roblox replicating the body's motion ([details and Studio checks](/guide/physics-bodies#roblox-s-own-replication)). Not with `motion = false` |
+| `apply` | `"cframe"` \| `"none"` \| `(model, CFrame) -> ()` | `"cframe"` | client | how a client applies the drawn pose. `"none"` set on the server is sent to clients, and used by a client that set no `apply` of its own for the kind (v0.5) |
+| `onSample` | `false` \| `(model, t, CFrame, velocity: Vector3?, spin: Vector3?, cut: boolean) -> ()` | `false` | client | called for each sample this client receives for an entity of the kind, inside the receive, in arrival order (`velocity` and `spin` for velocity kinds; `cut`: a `Tide.bump` sample). Not for samples that arrive before the model. Errors count as `applyErrors` |
 | `afterApply` | `false` \| `(model, CFrame) -> ()` | `false` | client | called each frame after the pose is applied (the default apply, anchoring included, still runs); errors count as `applyErrors` |
 | `animations` | boolean | `true` | server | `false`: this kind's animations stay Roblox's when `Config.animations` is on |
 | `motion` | boolean | `true` | server | `false`: a [state-only](/guide/state#state-only-entities) kind: no samples, no drawing, never culled |
 
-"Server" options are sent to clients by the server (`rate`, `rotation`, `buffer`, `extrapolate`, `keepAlive`, `maxSpeed`, `maxRise`, `maxFall`) or only
-used there; set them on the server. `apply` is read on the client; set it on the client. Built-in
-defaults are listed in [Bots and NPCs](/guide/entities#kinds).
+"Server" options are sent to clients by the server (`rate`, `rotation`, `buffer`, `extrapolate`, `keepAlive`, `maxSpeed`, `maxRise`, `maxFall`, `velocity`, and `apply` when it is `"none"`) or only
+used there; set them on the server. `apply`, `afterApply` and `onSample` are read on the client; set
+them on the client. Built-in defaults are listed in [Bots and NPCs](/guide/entities#kinds).
 
 ```lua
 Tide.kind("Ball", { rate = 60, rotation = "full", near = 150 })
@@ -100,16 +103,26 @@ bound, including when that model streams out (`rebindStreamed`), and never with 
 
 ```lua
 Tide.latest(target) -> CFrame?
+Tide.latest(target) -> (CFrame?, Vector3?, Vector3?, number?)   -- kinds with velocity = true
 ```
 
 The newest sample, with no interpolation delay. Server: the newest accepted sample (where a locked
 character stands on the server). Client: the newest sample received (`nil` for your own entities,
 which the server doesn't send back to you).
 
+For a kind with `velocity = true` it also returns that sample's linear velocity (studs/s), its spin
+(rad/s) and its server time: what a predictor starts from.
+
+```lua
+local cf, velocity, spin, stamp = Tide.latest(ball)
+```
+
 ### Tide.at
 
 ```lua
-Tide.at(target, t: number) -> CFrame?
+Tide.at(target, t: number) -> CFrame?                                  -- server
+Tide.at(model, t: number, extrapolate: number?) -> CFrame?             -- client
+-- kinds with velocity = true: -> (CFrame?, Vector3? velocity, Vector3? spin)
 ```
 
 The pose at server time `t`, interpolated from history. Holds the oldest sample before history begins
@@ -117,10 +130,20 @@ and the newest after it ends. `nil` if Tide doesn't know the target.
 
 - **Server:** from the server's history (`Config.HistorySize` samples per entity). Use it for hit checks
   ([guide](/guide/time-and-rewind#hit-checks-with-tide-at)).
-- **Client:** from the client's own buffer (`Config.ClientRing` samples). Useful for debugging and lag tools.
+- **Client:** from the client's own buffer (`Config.ClientRing` samples): the path Tide draws.
+  `Tide.at(model, Tide.timeOf(model))` is the pose at the time the entity is drawn, and
+  `Tide.at(ball, Tide.timeOf(body))` the ball at the time a body is drawn. With `extrapolate` (seconds),
+  the path continues past the newest sample for at most that long (a velocity kind: in a straight line
+  at that sample's velocity; other kinds: as Tide draws, from the last two samples within the kind's
+  speed limits).
+
+For a kind with `velocity = true` it also returns the velocity (studs/s) and the spin (rad/s) of the
+path at `t`: blended between the two samples' own values, or the path's slope where a segment ends in
+a cut or the velocities don't explain it ([details](/guide/physics-bodies#reading-it-on-a-client)).
 
 ```lua
 local cf = Tide.at(victim.Character, seenAt)
+local cf, velocity, spin = Tide.at(ball, seenAt)
 ```
 
 Code in another VM of the server (an Actor) rewinds through a [link](#links-other-vms).
@@ -209,8 +232,10 @@ of options, or just a type name. Fields get ids by name (at most 127). Errors on
 option, a bad value, or, on the server, when entities of the kind already have state. The server's
 declaration is sent to clients (a client's differing declaration is warned about, and the server's is
 used). Options: `type` (`"bool"`, `"u8"`, `"u16"`, `"i16"`, `"f32"`, `"f64"`, `"time"`, `"ref"`,
-`"enum"`, `"event"`, `"yaw"`, `"pos"`), `default`, `to` (`"all"`, `"owner"`, `"others"`, `"server"`),
-`apply` (`"drawn"`, `"arrival"`), `values` (enum), `payload` (event), `mirror`, `mirrorOn`
+`"enum"`, `"event"`, `"yaw"`, `"pos"`, and since v0.5 `"vector"` (the same type as `"pos"`) and
+`"cframe"`), `default`, `to` (`"all"`, `"owner"`, `"others"`, `"server"`),
+`apply` (`"drawn"`, `"arrival"`), `values` (enum), `payload` (event: a type name, or since v0.5 a table
+of 1 to 32 [named members](/guide/state#payloads-with-several-values)), `mirror`, `mirrorOn`
 (`"model"`, `"player"`), `mirrorNil`, `history`. See the
 [field options](/guide/state#field-options).
 
@@ -233,9 +258,12 @@ the stamp of the latest fire and its payload. Unknown targets give `nil`; an unk
 Tide.timeOf(target) -> number
 ```
 
-The server time an entity is at. Server: now. Client: the time its body and its state are drawn at
-(`now - Tide.delay(model)` for remote entities, now for your own, the [clock](#tide-clock) you gave for
-state-only ones). Never goes back. Compare `time` fields against it.
+The server time an entity is at. Server: now. Client: the time its body and its state are drawn at.
+In order: now for an entity this client owns; what the [clock](#tide-clock) you gave returns;
+`now - kind.buffer` for a state-only entity; else `now - Tide.delay(model)`, the delay of the stream
+the entity is buffered with (its own for an entity another client owns, one per kind for server-owned
+entities). Now for unknown models. Never goes back. Compare `time` fields against it, and read other
+entities at it: `Tide.at(ball, Tide.timeOf(body))`.
 
 ### Tide.changed
 
@@ -266,11 +294,12 @@ A copy of the counters.
 | Side | Counters |
 |---|---|
 | server | `packets`, `samples`, `badPacket`, `owner`, `stamp`, `nan`, `speed`, `rate`, `errors`, `relayBytes`, `relayPackets`, `budgetDropped`, `spacing` (uploads closer than half an interval), `teleportWait` (owner uploads dropped while a teleport is unacknowledged), `teleportIgnored`, `teleportFlagged` (server-owned samples flagged by `teleportDistance` or `markTeleport`), `inBytes` (all bytes received from clients), `inBytesPerSecond`, `relayBytesPerSecond` (both over the last second) |
+| server, velocity kinds | `velocitySamples` (samples of velocity kinds encoded), `velocityBytes` (bytes of their records sent, included in `relayBytes`), `bumps` (`Tide.bump` calls sampled at once), `bumpsDeferred` (bumps made while physics stepped: sampled at that frame's step), `serverLocks` (server-owned bodies locked with the kind option `lock`) |
 | server, links | `linkUnknown` (intents for keys not linked: dropped), `linkBad` (intents that failed: unknown player, malformed, or never written) |
 | server, audiences | `audienceAdds` (ADDs sent again to players coming back into an entity's audience) |
 | server, animations | `animEvents` (accepted), `animBad` (malformed), `animRate`, `animOwner`, `animStamp` (older than the entity's previous event), `animUnknown` (unknown id or priority), `animDropped` (kind opted out), `animRegister` (refused id requests), `animIdsFull`, `animRelayBytes` |
 | server, state | `stateSets` (changes recorded), `stateSame` (sets of the current value, skipped), `stateClamped` (stamps clamped), `stateSnaps`, `stateRelayBytes`, `stateRejected` (state messages from clients), `stateNoEntity` (sets on non-entities, ignored) |
-| client | `packets`, `records`, `badPacket`, `unknownSlot`, `late`, `uploads`, `uploadBytes`, `uploadSkipped` (idle samples not uploaded), `applyErrors`, `modelsLost` (models dropped when streamed out, `rebindStreamed`), `modelsRebound` (re-streamed instances bound again) |
+| client | `packets`, `records`, `badPacket`, `unknownSlot`, `late`, `uploads`, `uploadBytes`, `uploadSkipped` (idle samples not uploaded), `applyErrors` (errors in `apply`, `afterApply` and `onSample`), `modelsLost` (models dropped when streamed out, `rebindStreamed`), `modelsRebound` (re-streamed instances bound again), `velocityRecords` (records with a velocity header received) |
 | client, animations | `animSent`, `animApplied`, `animSnaps`, `animIgnored`, `animOverflow` (applied early: queue full), `animDrift` (tracks put back on the render clock), `animUnknown`, `animBad`, `animSwapped`, `animSwapSkipped` (owner `Animator` already in use) |
 | client, state | `stateApplied`, `stateLate` (arrived after its time), `stateStale` (older than the applied value, skipped), `stateOverflow` (applied early: queue full), `stateSnaps`, `stateBad` (malformed), `stateClockErrors`, `stateMirrorErrors` |
 
@@ -348,7 +377,33 @@ Tide.set(character, "SlideAt", pressAt, pressAt)
 Tide.fire(target, field: string, payload: any?, stamp: number?)
 ```
 
-Fires an event field, with its payload if the field declares one. Stamps as `Tide.set`.
+Fires an event field, with its payload if the field declares one. Stamps as `Tide.set`. For a payload
+with named members, `payload` is a table of them (members left out take their type's default; an
+unknown member or a wrong type is an error), and listeners get a frozen table.
+
+```lua
+Tide.fire(ball, "Kick", { Position = p, Velocity = v, By = character }, Tide.bump(ball))
+```
+
+### Tide.bump
+
+```lua
+Tide.bump(target) -> number?
+```
+
+Samples a server-owned entity now, out of its kind's tick. Call it right after game code changed the
+body's motion abruptly (a kick, a catch, a bounce it resolved itself): receivers get the new pose and
+velocity with this frame's packet, and for kinds with `velocity = true` the sample is a **cut** (the
+path has a corner there). Returns the sample's server time, to use as the stamp of the `Tide.set` /
+`Tide.fire` of the same moment; `nil` when the target is not a server-owned motion entity.
+
+- Outside the physics step (remote handlers, `Heartbeat`, resumed threads): sampled at once; the stamp
+  is the last frame's time, or 1 ms after the entity's newest sample when that is later.
+- Between `PreSimulation` and Tide's step of the frame (`PreSimulation` and `Stepped` connections):
+  sampled at that step with the pose physics ends on; the time returned is the time of the call.
+- Nothing is sampled when neither the pose nor the velocity changed since the newest sample.
+
+On a client `Tide.bump` returns `nil`. See [Kicks](/guide/physics-bodies#kicks-tide-bump).
 
 ### Tide.stateAt
 
@@ -408,13 +463,15 @@ Tide.velocity(target) -> Vector3
 Velocity in studs per second from the server's history (newest sample against the one about 50 ms
 older, never across a teleport or an idle gap). Zero when the entity stands still or is unknown; right
 after a teleport, the velocity given to it. A locked character's locker gets this velocity
-(`AssemblyLinearVelocity`, plus `AssemblyAngularVelocity` for `rotation = "full"` kinds).
+(`AssemblyLinearVelocity`, plus `AssemblyAngularVelocity` for `rotation = "full"` kinds). For a kind
+with `velocity = true`: the newest sample's own velocity.
 
 ### Handle
 
 ```lua
 handle:teleport(cf: CFrame, velocity: Vector3?)
 handle:markTeleport(target: CFrame | Vector3 | nil)
+handle:bump() -> number?
 handle:setOwner(player: Player?)
 handle:owner() -> Player?
 handle:setAudience(audience: ((player: Player) -> boolean) | { Player } | nil)
@@ -439,8 +496,10 @@ handle.model -- the registered model
   flagged; call it after moving the model. A target: the first sample within
   `Config.TeleportGrantRadius` of it in the next second is flagged, for moves that land later. Does
   nothing for client-owned entities (use `teleport`). See also the kind option `teleportDistance`.
+- `bump`: same as [`Tide.bump`](#tide-bump).
 - `setOwner`: hands the entity to a player, or back to the server with `nil`. See
-  [Config.ownerEase and ownerStart](/reference/config#owner-changes) for smoother changes.
+  [Config.ownerEase and ownerStart](/reference/config#owner-changes) for smoother changes. An error
+  for a kind with `velocity = true` (server-owned only).
 - `owner`: the owning player, `nil` when server-owned or removed.
 - `setAudience`: who receives the entity. `nil` (the default): every player. A list (or set) of
   players: only them. A function: asked for each player every `Config.InterestEvery` (0.1 s); an error
@@ -466,11 +525,12 @@ handle.model -- the registered model
 local Link = require(ReplicatedStorage.Tide.Shared.Link)
 local venue = Link.open(name: string)
 venue:has(key) -> boolean
-venue:at(key, t: number) -> CFrame?
-venue:latest(key) -> (CFrame?, number?)
+venue:at(key, t: number) -> CFrame?                      -- velocity kinds: CFrame?, velocity, spin
+venue:latest(key) -> (CFrame?, number?)                  -- velocity kinds: CFrame?, time, velocity, spin
 venue:setOwner(key, userId: number?)
 venue:teleport(key, cf: CFrame, velocity: Vector3?)
 venue:markTeleport(key, target: CFrame | Vector3 | nil)
+venue:bump(key)
 ```
 
 Tide's server runs in one VM (it owns the remotes). `handle:link(name, key)` in that VM mirrors the
@@ -480,14 +540,17 @@ In any other VM, `Link.open(name)` reads it:
 - `at` and `latest` answer what `Tide.at` / `Tide.latest` answer in the Tide VM, from the same samples
   with the same interpolation, up to one Tide frame behind. `nil` for keys not linked. `latest` also
   returns the sample's server time.
-- `setOwner`, `teleport` and `markTeleport` queue intents. The Tide VM applies them at the start of its
-  next frame, in order, as `handle:setOwner` (by `UserId`; `nil` or `0` is the server), `handle:teleport`
-  and `handle:markTeleport`. There is no reply and nothing is synchronous: read `Tide.owner` /
+- For a kind with `velocity = true`, `at` also returns the velocity and the spin at `t`, and `latest`
+  returns them after the sample's time (note the order: `cf, t, velocity, spin`; `Tide.latest` returns
+  `cf, velocity, spin, t`).
+- `setOwner`, `teleport`, `markTeleport` and `bump` queue intents. The Tide VM applies them at the start
+  of its next frame, in order, as `handle:setOwner` (by `UserId`; `nil` or `0` is the server),
+  `handle:teleport`, `handle:markTeleport` and `handle:bump`. There is no reply and nothing is synchronous: read `Tide.owner` /
   `venue:latest` later to see the result. Intents for keys not linked then are dropped
   (`linkUnknown`); ones that fail are dropped too (`linkBad`).
 
 Nothing is mirrored until something is linked. Each mirrored sample costs one `SharedTable` write (a
-73-byte string) plus one for the entity's newest index. See
+73-byte string, 121 bytes for a velocity kind) plus one for the entity's newest index. See
 [Time and rewind](/guide/time-and-rewind#other-vms-actors) for an example and the limits.
 
 ## Client
@@ -533,9 +596,12 @@ its stamp. Before anything arrived: the applied value and `nil`.
 Tide.clock(model: Instance, fn: ((now: number) -> number)?)
 ```
 
-Gives the clock a [state-only](/guide/state#state-only-entities) entity's state applies at, for things
-your own code draws: `fn(now)` returns the server time the model is drawn at. `nil` removes it. Kept
-monotonic per entity. (On the server it does nothing, so shared code may call it.)
+Gives the clock an entity's state applies at, for things your own code draws (a
+[state-only](/guide/state#state-only-entities) entity, or one of a kind with `apply = "none"`):
+`fn(now)` returns the server time the model is drawn at. `nil` removes it. Kept monotonic per entity.
+From then on it is the entity's [`Tide.timeOf`](#tide-timeof). It does not change what `Tide.at` and
+`Tide.latest` return, nor where Tide draws a model it moves itself. An error or a non-number falls back
+to the default clock (`stateClockErrors`). (On the server it does nothing, so shared code may call it.)
 
 ### Tide.sampleInfo
 

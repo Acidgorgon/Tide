@@ -23,9 +23,10 @@ a keep-alive every `keepAlive` seconds (0.5 s) so clients can tell "standing sti
 Adding a model that is already registered replaces its registration. Destroying the model removes it.
 
 ::: info Roblox still replicates the server's copy
-The [lock](/guide/players#the-lock) is only for client-owned entities. For a server-owned model Roblox
+The [player lock](/guide/players#the-lock) is for client-owned entities. For a server-owned model Roblox
 replicates the server's parts as usual; on each client Tide anchors the root and draws over it every
-frame, so what you see is Tide's stream.
+frame, so what you see is Tide's stream. The kind option `lock = true` (v0.5) stops Roblox replicating
+a server-owned body's motion too; see [Balls and projectiles](/guide/physics-bodies#roblox-s-own-replication).
 :::
 
 ## The handle
@@ -84,6 +85,10 @@ Tide.add(ball, "Ball")
 The server sends each kind's network settings (`rate`, `rotation`, `buffer`, `extrapolate`) to clients,
 so you don't repeat them there. Kinds defined after `Tide.start()` are sent to clients too.
 
+A body that physics moves (a ball, a puck, a projectile) usually wants more than this example: samples
+that carry its velocity and spin, and a sample the moment it is kicked. That is the kind option
+`velocity = true` and `Tide.bump`, in [Balls and projectiles](/guide/physics-bodies).
+
 ### Drawing it yourself
 
 By default a client sets the root's CFrame (`apply = "cframe"`). `apply` is a client-side option, so set
@@ -102,6 +107,14 @@ Tide.kind("Marker", { apply = "none" }) -- Tide moves nothing; read Tide.drawn(m
 
 With a function or `"none"`, Tide does not anchor the root on that client. Errors in your function are
 caught and counted in `Tide.stats().applyErrors`.
+
+`apply = "none"` can also be set in the **server's** declaration of the kind (v0.5): it is sent to
+clients with the kind, and a client that set no `apply` of its own for that kind uses it. To change
+your mind later, set `apply = "cframe"` on the server: clients go back to drawing and anchoring.
+
+`Tide.at(model, t)` on a client reads the buffered path at any server time, so a renderer of your own
+can draw an entity at a time it chooses; see
+[which clock](/guide/physics-bodies#which-clock).
 
 ## Ownership
 

@@ -56,6 +56,9 @@ Tide relays.
 | `"root"` (default) | An invisible, near-massless locker part inside a non-replicated `Camera` under the root part becomes the assembly root, so Roblox stops replicating the assembly while the owner keeps simulating its own copy. The server moves the locker each frame. |
 | `"anchored"` | An anchored locker under the server's camera, welded to the root, moved with one `BulkMoveTo`. Simpler, but anchoring the assembly can take network ownership away from the owner. A fallback. |
 
+Server-owned physics bodies (a ball) have their own opt-in lock, the kind option `lock`: see
+[Balls and projectiles](/guide/physics-bodies#roblox-s-own-replication).
+
 Optional: `Config.lockHumanoidStates` takes a list of `Enum.HumanoidStateType` to disable on the
 **server's** Humanoid while locked, if you see the server Humanoid fight the lock.
 

@@ -516,7 +516,10 @@ local function stampFor(stamp: number?): number
 			counters.stateClamped += 1
 			t = lo
 		elseif stamp > t then
-			counters.stateClamped += 1
+			-- (a stamp from Tide.bump may be a millisecond ahead: clamped, not worth a count)
+			if stamp - t > 0.002 then
+				counters.stateClamped += 1
+			end
 		else
 			t = stamp
 		end
