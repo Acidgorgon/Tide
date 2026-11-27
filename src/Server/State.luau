@@ -36,6 +36,23 @@ State.markZ = {} :: { [number]: number }
 
 State.still = {} :: { [number]: boolean } -- a "stopped" sample (same pose twice) was pushed
 
+-- Tide.bump (v0.5)
+State.forceCut = {} :: { [number]: boolean } -- the next sample is a cut (the motion changed abruptly)
+State.bumped = {} :: { [number]: boolean } -- bumped while physics was stepping: sampled at this frame's step
+State.bumpN = 0 -- entities in `bumped`
+State.inSim = false -- between PreSimulation and Tide's own step of the frame (poses are not final)
+State.frameT = 0 -- server time of Tide's last frame step (the time the poses that stand now were reached)
+-- Tide.flush: entities bumped at once since the last relay (their samples wait for a relay)
+State.late = {} :: { [number]: boolean }
+State.lateList = {} :: { number } -- the slots flagged in `late`, 1 .. lateN (entries may be stale: check the flag)
+State.lateN = 0
+
+-- stop redundancy (kind option restRepeats): the last samples of a resting entity go out again
+State.restLeft = {} :: { [number]: number } -- unchanged ticks that still repeat them
+State.restDue = {} :: { [number]: boolean } -- repeat them with this frame's relay
+State.restList = {} :: { number } -- the slots flagged in `restDue`, 1 .. restN (entries may be stale: check the flag)
+State.restN = 0
+
 -- pending server teleport of a client-owned entity (until the owner's flagged upload)
 State.tpPending = {} :: { [number]: boolean }
 State.tpX = {} :: { [number]: number }
@@ -74,6 +91,8 @@ State.charSlot = {} :: { [any]: number } -- player -> slot of their Player-kind 
 -- receivers (players)
 State.rx = {} :: { [any]: any } -- player -> receiver record
 State.rxList = {} :: { any } -- ready receivers
+-- Tide.focus for a player whose receiver record does not exist yet (taken when it is created)
+State.focusPending = {} :: { [any]: any }
 
 State.counters = {
 	packets = 0,
@@ -119,6 +138,14 @@ State.counters = {
 	linkBad = 0, -- intents that failed (malformed, unknown op or player): dropped
 	-- audiences (v0.4.1)
 	audienceAdds = 0, -- ADDs sent again to receivers that came back into an entity's audience
+	-- velocity kinds and Tide.bump (v0.5)
+	velocitySamples = 0, -- samples of velocity kinds encoded for relay
+	velocityBytes = 0, -- bytes of their records sent to clients (part of relayBytes)
+	bumps = 0, -- Tide.bump calls that sampled at once
+	bumpsDeferred = 0, -- Tide.bump calls made while physics was stepping (sampled at that frame's step)
+	serverLocks = 0, -- server-owned entities given a lock (kind option lock)
+	restRepeats = 0, -- stop repeats sent: entities x ticks (kind option restRepeats)
+	flushes = 0, -- Tide.flush calls that sent something
 }
 
 State.onSuspicious = nil :: ((player: any, reason: string) -> ())?

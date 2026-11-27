@@ -6,10 +6,15 @@
 -- packet. Channels: "Relay", "Upload", "Control", "Anim" (out only; incoming
 -- animation messages share TideR and count as "Control") (lh.net, one call per packet,
 -- with the player on the server). Probes: see the names below.
+-- Counters (v0.5, lh.count through `counter`): "Tide.Velocity.samples" (server: samples of
+-- velocity kinds encoded; client: velocity records received), "Tide.Velocity.bytes" (server:
+-- bytes of their records sent, part of the "Relay" channel's total), "Tide.Bump" (server:
+-- Tide.bump calls), "Tide.Flush" (server: Tide.flush calls that sent something).
 
 local Lighthouse = {}
 
 Lighthouse.api = nil :: any -- shared.Lighthouse as of the last frame(), or nil
+Lighthouse.counter = nil :: any -- api.count while `api` is set and has it (name, n?) -> ()
 
 -- probes, set while `api` is set
 Lighthouse.sample = nil :: any -- server: Ticker, teleports, lock ("Tide.Sample")
@@ -43,6 +48,7 @@ function Lighthouse.frame(): any
 		end
 	end
 	Lighthouse.api = usable
+	Lighthouse.counter = if usable ~= nil and type(usable.count) == "function" then usable.count else nil
 	return usable
 end
 

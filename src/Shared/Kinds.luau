@@ -24,6 +24,11 @@ export type Kind = {
 	animations: boolean, -- false: this kind's animations stay Roblox's (Config.animations opt-out)
 	motion: boolean, -- false: state-only entities (no samples, no relay, no apply; v0.3 timeline state)
 	teleportDistance: number, -- server-owned: a jump between two samples longer than this is flagged a teleport (v0.4)
+	velocity: boolean, -- server-owned: samples carry the root's linear velocity and spin (v0.5)
+	lock: boolean, -- server-owned: a non-replicated assembly root stops Roblox replicating the motion (v0.5, see Server/Lock)
+	onSample: any, -- false | (model, t, CFrame, velocity, spin, cut) -> (): each sample this client receives (client, v0.5)
+	restRepeats: number, -- server-owned: the stop sample and the two before it go out again on this many of the next unchanged ticks (v0.5)
+	restAuto: boolean, -- restRepeats was not given: it follows `velocity`
 	-- runtime (server ticker)
 	acc: number,
 	tick: boolean,
@@ -55,7 +60,15 @@ local FIELDS = {
 	animations = "boolean",
 	motion = "boolean",
 	teleportDistance = "number",
+	velocity = "boolean",
+	lock = "boolean",
 }
+
+local REST_REPEATS_MAX = 8
+-- restRepeats of a kind that does not set it: velocity kinds repeat (receivers carry a body on
+-- at its last velocity, so a lost stop runs on until the keep-alive); the others send the bytes
+-- they always sent.
+local REST_REPEATS_VELOCITY = 2
 
 local function newKind(name: string): Kind
 	return {
@@ -79,6 +92,11 @@ local function newKind(name: string): Kind
 		animations = true,
 		motion = true,
 		teleportDistance = math.huge,
+		velocity = false,
+		lock = false,
+		onSample = false,
+		restRepeats = 0,
+		restAuto = true,
 		acc = 0,
 		tick = false,
 	}
@@ -105,6 +123,17 @@ local function applyOpts(kind: Kind, opts: { [string]: any }?)
 				error(`Tide.kind("{kind.name}"): afterApply must be a function or false`, 3)
 			end
 			kind.afterApply = value
+		elseif key == "onSample" then
+			if value ~= false and type(value) ~= "function" then
+				error(`Tide.kind("{kind.name}"): onSample must be a function or false`, 3)
+			end
+			kind.onSample = value
+		elseif key == "restRepeats" then
+			if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > REST_REPEATS_MAX then
+				error(`Tide.kind("{kind.name}"): restRepeats must be a whole number from 0 to {REST_REPEATS_MAX}`, 3)
+			end
+			kind.restRepeats = value
+			kind.restAuto = false
 		else
 			error(`Tide.kind("{kind.name}"): unknown option {key}`, 3)
 		end
@@ -121,6 +150,12 @@ local function applyOpts(kind: Kind, opts: { [string]: any }?)
 	kind.cull = math.max(kind.cull, kind.far)
 	if not (kind.teleportDistance > 0) then
 		error(`Tide.kind("{kind.name}"): teleportDistance must be a positive number`, 3)
+	end
+	if kind.motion == false and (kind.velocity or kind.lock) then
+		error(`Tide.kind("{kind.name}"): velocity and lock need motion (motion = false is state-only)`, 3)
+	end
+	if kind.restAuto then
+		kind.restRepeats = if kind.velocity then REST_REPEATS_VELOCITY else 0
 	end
 end
 

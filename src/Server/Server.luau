@@ -88,6 +88,15 @@ function Handle.markTeleport(self: any, target: any)
 	end
 end
 
+-- Samples a server-owned entity now, out of tick, and marks the sample a cut (see Server.bump).
+function Handle.bump(self: any): number?
+	local slot = liveSlot(self)
+	if slot then
+		return Server.bump(slot)
+	end
+	return nil
+end
+
 -- Quantization origin of this entity (nil: Config.origin). Packed positions cover +-1024
 -- studs around it; give entities far from Config.origin (another arena, a far venue) one
 -- near them to keep the compact record. Set it in the frame of Tide.add (it travels with the
@@ -223,6 +232,8 @@ local function writeHello(w: Control.Writer)
 			(if kind.full then 1 else 0)
 				+ (if anims and (kind.animations == false or kind.motion == false) then 2 else 0)
 				+ (if kind.motion == false then 4 else 0)
+				+ (if kind.velocity then 8 else 0)
+				+ (if kind.apply == "none" and kind.motion ~= false then 16 else 0)
 		)
 		Control.f32(w, kind.buffer)
 		Control.f32(w, kind.extrapolate)
@@ -473,6 +484,9 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	end
 	if owner ~= nil then
 		assert(typeof(owner) == "Instance" and owner:IsA("Player"), "Tide.add: owner must be a Player or nil")
+		if kind.velocity then
+			error(`Tide.add: kind "{kind.name}" has velocity = true, which is for server-owned entities`, 2)
+		end
 	end
 	local existing = State.bySlotModel[model]
 	if existing ~= nil then
@@ -487,19 +501,26 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	State.root[slot] = root
 	State.kind[slot] = kind
 	State.owner[slot] = owner or false
-	local h = Ring.new(Config.HistorySize, full)
+	local h = Ring.new(Config.HistorySize, full, kind.velocity and kind.motion ~= false)
 	State.hist[slot] = h
 	-- seed with the server's current pose (speed-check reference for uploads)
 	local x, y, z, yaw, qx, qy, qz, qw = Rig.read(model, root, full)
 	local _fl
 	x, y, z, yaw, _fl, qx, qy, qz, qw = Codec.quantize(x, y, z, yaw, if full then 2 else 0, qx, qy, qz, qw)
-	Ring.push(h, if owner then t - Config.MaxBackdate else t, x, y, z, yaw, 0, qx, qy, qz, qw)
+	local seeded = Ring.push(h, if owner then t - Config.MaxBackdate else t, x, y, z, yaw, 0, qx, qy, qz, qw)
+	if h.vel then
+		Ring.setVel(h, seeded, Codec.quantizeMotion(Rig.readMotion(root)))
+	end
 	-- state-only kinds (motion = false) never relay a sample
 	State.relayed[slot] = if kind.motion == false then h.last else 0
 	State.sentT[slot] = t
 	State.heldT[slot] = 0
 	State.forceTele[slot] = false
+	State.forceCut[slot] = false
 	State.still[slot] = false
+	State.restLeft[slot] = 0
+	State.restDue[slot] = false
+	State.late[slot] = false
 	State.tpVel[slot] = nil
 	State.audience[slot] = nil
 	State.markUntil[slot] = nil
@@ -517,6 +538,8 @@ function Server.add(model: any, kindName: string?, owner: any?): any
 	end
 	if owner ~= nil and Config.lockPlayers and kind.motion ~= false then
 		Lock.lock(slot)
+	elseif owner == nil and kind.lock and kind.motion ~= false then
+		Lock.lockServer(slot)
 	end
 	watchRoot(slot)
 
@@ -543,6 +566,15 @@ function Server.remove(slot: number)
 		return
 	end
 	Lock.unlock(slot)
+	Lock.unlockServer(slot)
+	if State.bumped[slot] then
+		State.bumped[slot] = nil
+		State.bumpN -= 1
+	end
+	State.forceCut[slot] = nil
+	State.restLeft[slot] = nil
+	State.restDue[slot] = nil
+	State.late[slot] = nil
 	unwatch(slot)
 	Mirror.unlink(slot)
 	Anim.onRemove(slot)
@@ -730,6 +762,93 @@ function Server.markTeleport(slot: number, target: any)
 	Ticker.sample(slot, math.max(t, Ring.newestT(State.hist[slot]) + 0.0005))
 end
 
+-- Samples a server-owned entity now, out of tick (v0.5): call it right after game code changed
+-- its motion abruptly (a kick, a bounce it resolved itself, a catch), so receivers get the new
+-- pose and velocity with this frame's packet instead of at the kind's next tick. For kinds
+-- with velocity = true the sample is marked a CUT: paths do not curve across it.
+--
+-- Returns the sample's server time (pass it as the stamp of a Tide.fire / Tide.set that
+-- belongs to the same moment), or nil when the entity is not a server-owned motion entity.
+--   * outside the physics step (remote handlers, Heartbeat after Tide's own step, task
+--     scheduler resumes): sampled at once. The poses that stand are the ones the last frame
+--     ended with, so the stamp is that frame's time (1 ms after the entity's newest sample
+--     when it was sampled that frame already).
+--   * between PreSimulation and Tide's step of the frame (physics has not finished): the
+--     entity is sampled at that step whatever its kind's tick, with the pose physics ends on;
+--     the time returned is the time of the call (the sample's is within the frame after it).
+-- Nothing is sent when neither the pose nor the velocity changed since the newest sample.
+-- A sample taken at once waits for a relay: the frame's own, or Tide.flush (Server.flush) for a
+-- bump made after it.
+function Server.bump(target: any): number?
+	local slot = if type(target) == "number" then target else Server.slotOf(target)
+	if slot == nil or State.index[slot] == nil or State.owner[slot] or State.kind[slot].motion == false then
+		return nil
+	end
+	local c = State.counters
+	local count = LH.counter
+	if count then
+		count("Tide.Bump")
+	end
+	if State.inSim then
+		if not State.bumped[slot] then
+			State.bumped[slot] = true
+			State.bumpN += 1
+		end
+		State.forceCut[slot] = true
+		c.bumpsDeferred += 1
+		return now()
+	end
+	local h = State.hist[slot]
+	local stamp = State.frameT
+	if stamp == 0 then
+		stamp = now()
+	end
+	-- two ticks of the wire's time grid after anything known: receivers never see two samples
+	-- at one time
+	local floor = math.max(Ring.newestT(h), State.heldT[slot]) + 0.001
+	if stamp < floor then
+		stamp = floor
+	end
+	State.forceCut[slot] = true
+	local before = h.last
+	Ticker.sample(slot, stamp, true)
+	if h.last > before and not State.late[slot] then
+		State.late[slot] = true
+		local n = State.lateN + 1
+		State.lateN = n
+		State.lateList[n] = slot
+	end
+	c.bumps += 1
+	return stamp
+end
+
+local stepping = false -- inside Tide's own step of a frame
+
+-- Sends, now, the samples of the entities bumped since the last relay, to the receivers the
+-- frame's relay would send them to (audiences, tiers and byte budgets as there; the bytes are
+-- charged once, and the frame's relay does not send them again). For a kick made after Tide's
+-- step of the frame (a Heartbeat connection, a thread resumed by the scheduler): without it
+-- the sample leaves with the next frame's packet. Returns the number of entities sent.
+-- Does nothing (0) when nothing was bumped, between PreSimulation and the end of Tide's step
+-- (that step's relay is about to send everything, and a bump made then is not sampled yet),
+-- and from a callback that runs inside a relay.
+function Server.flush(): number
+	if State.lateN == 0 or State.inSim or stepping or not State.started then
+		return 0
+	end
+	-- queued ADD / OWNER messages first, as in a frame: receivers must know the entities
+	flushBroadcast()
+	local sent = Relay.flush(now())
+	if sent > 0 then
+		State.counters.flushes += 1
+		local count = LH.counter
+		if count then
+			count("Tide.Flush")
+		end
+	end
+	return sent
+end
+
 -- Intents queued by other VMs on a link (Shared/Link), applied at the start of a frame.
 Mirror.apply = function(op: string, slot: number, intent: any)
 	if op == "owner" then
@@ -756,6 +875,8 @@ Mirror.apply = function(op: string, slot: number, intent: any)
 			target = Vector3.new(intent.x, intent.y, intent.z)
 		end
 		Server.markTeleport(slot, target)
+	elseif op == "bump" then
+		Server.bump(slot)
 	else
 		error("unknown op")
 	end
@@ -796,6 +917,9 @@ function Server.setOwner(slot: number, player: any?)
 	if old == (player or false) then
 		return
 	end
+	if player ~= nil and State.hist[slot].vel then
+		error(`Tide: kind "{State.kind[slot].name}" has velocity = true, which is for server-owned entities`, 3)
+	end
 	-- ownerStart = "server": the new owner starts from the server's pose (live for a
 	-- server-owned entity, else the newest accepted sample), carried to its arrival time
 	local pose: { number }? = nil
@@ -830,6 +954,14 @@ function Server.setOwner(slot: number, player: any?)
 		State.charSlot[old] = nil
 	end
 	Lock.unlock(slot)
+	Lock.unlockServer(slot)
+	if State.bumped[slot] then
+		State.bumped[slot] = nil
+		State.bumpN -= 1
+	end
+	State.forceCut[slot] = false
+	State.restLeft[slot] = 0
+	State.restDue[slot] = false
 	unwatch(slot)
 	State.endTeleport(slot)
 	State.owner[slot] = player or false
@@ -845,6 +977,8 @@ function Server.setOwner(slot: number, player: any?)
 			Lock.lock(slot)
 		end
 		watchRoot(slot)
+	elseif State.kind[slot].lock and State.kind[slot].motion ~= false then
+		Lock.lockServer(slot)
 	end
 	Control.u8(bcast, Control.OWNER)
 	Control.u16(bcast, slot)
@@ -887,10 +1021,25 @@ function Server.setAudience(slot: number, audience: any)
 	Relay.recomputeSlot(slot)
 end
 
+-- Forgets the focuses remembered for players that are gone (a call made for a player that
+-- left, or one that left before Tide.start).
+local function pruneFocus()
+	local pending = State.focusPending
+	for player in pending do
+		if player.Parent == nil then
+			pending[player] = nil
+		end
+	end
+end
+
 -- Interest centre of a player that has no "Player" entity (a spectator camera, a watched
 -- match): a BasePart or Model (followed), a Vector3, or nil (none). A character entity,
 -- while it exists, still wins.
-function Server.focus(player: any, target: any)
+-- A player Tide does not have a receiver for yet (the call came before Tide's own PlayerAdded
+-- connection ran, or before Tide.start) keeps the focus until the receiver is created.
+-- Returns true when the focus is set or remembered, false for a player that is not in the
+-- game (nothing is kept).
+function Server.focus(player: any, target: any): boolean
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "Tide.focus: player expected")
 	local kind = typeof(target)
 	assert(
@@ -899,13 +1048,21 @@ function Server.focus(player: any, target: any)
 	)
 	local rx = State.rx[player]
 	if rx == nil then
-		return
+		local pending = State.focusPending
+		pending[player] = nil
+		pruneFocus()
+		if player.Parent == nil then
+			return false
+		end
+		pending[player] = target
+		return true
 	end
 	rx.focus = target
 	rx.focusX, rx.focusY, rx.focusZ = nil, nil, nil
 	if rx.ready then
 		Relay.recomputeRx(rx)
 	end
+	return true
 end
 
 --------------------------------------------------------------------------------
@@ -939,21 +1096,62 @@ local function poseCFrame(slot: number, t: number?): CFrame?
 	return Rig.cframe(x, y, z, yaw, full, qx, qy, qz, qw)
 end
 
--- CFrame at server time t from history (same interpolation clients draw).
-function Server.at(target: any, t: number): CFrame?
+local motion = Interp.motion
+
+-- CFrame at server time t from history (same interpolation clients draw). Kinds with
+-- velocity = true (v0.5): also the linear velocity (studs/s) and the spin (rad/s) of the path
+-- at t; other kinds return the CFrame alone.
+function Server.at(target: any, t: number): (CFrame?, Vector3?, Vector3?)
 	local slot = Server.slotOf(target)
 	if slot == nil then
 		return nil
 	end
-	return poseCFrame(slot, t)
+	local cf = poseCFrame(slot, t)
+	if cf ~= nil and State.hist[slot].vel then
+		return cf, Vector3.new(motion[1], motion[2], motion[3]), Vector3.new(motion[4], motion[5], motion[6])
+	end
+	return cf
 end
 
-function Server.latest(target: any): CFrame?
+-- The server times the entity's history covers: its oldest kept sample and its newest. Tide.at
+-- answers from the path inside that range and holds the nearest end outside it. For a
+-- server-owned entity at rest the newest end is the last tick that found it unchanged (ticks
+-- between the stop sample and the keep-alive add no sample, but the pose is known to stand).
+-- nil, nil for unknown targets and state-only entities.
+function Server.span(target: any): (number?, number?)
+	local slot = Server.slotOf(target)
+	if slot == nil or State.kind[slot].motion == false then
+		return nil, nil
+	end
+	local h = State.hist[slot]
+	local n = h.n
+	if n == 0 then
+		return nil, nil
+	end
+	local cap = h.cap
+	local last = h.last
+	local newest = h.t[last % cap + 1]
+	local held = State.heldT[slot]
+	if held > newest then
+		newest = held
+	end
+	return h.t[(last - n + 1) % cap + 1], newest
+end
+
+-- Newest sample. Kinds with velocity = true (v0.5): also its velocity, its spin and its server
+-- time.
+function Server.latest(target: any): (CFrame?, Vector3?, Vector3?, number?)
 	local slot = Server.slotOf(target)
 	if slot == nil then
 		return nil
 	end
-	return poseCFrame(slot, nil)
+	local cf = poseCFrame(slot, nil)
+	local h = State.hist[slot]
+	if cf ~= nil and h.vel then
+		local p = h.last % h.cap + 1
+		return cf, Vector3.new(h.vx[p], h.vy[p], h.vz[p]), Vector3.new(h.wx[p], h.wy[p], h.wz[p]), h.t[p]
+	end
+	return cf
 end
 
 -- Velocity from history (studs/s); zero if unknown or idle.
@@ -1127,6 +1325,14 @@ local function onPlayerAdded(player: any)
 		resendT = -1,
 		conns = {},
 	}
+	-- a focus set before this record existed
+	local pending = State.focusPending
+	local focus = pending[player]
+	if focus ~= nil then
+		pending[player] = nil
+		State.rx[player].focus = focus
+	end
+	pruneFocus()
 	if autoPlayers then
 		local rx = State.rx[player]
 		table.insert(
@@ -1151,6 +1357,7 @@ local function onPlayerAdded(player: any)
 end
 
 local function onPlayerRemoving(player: any)
+	State.focusPending[player] = nil
 	local rx = State.rx[player]
 	if rx == nil then
 		return
@@ -1252,9 +1459,16 @@ local function countRates(t: number)
 	end
 end
 
+-- Physics is about to step: poses are not final until Tide's own step of this frame
+-- (Server.bump defers to it).
+local function onPreSimulation()
+	State.inSim = true
+end
+
 local function onFrame(dt: number)
 	local t = now()
 	frame += 1
+	stepping = true
 	-- server time is the clock; fall back to dt if it did not move
 	local step = t - lastT
 	if lastT == 0 or step <= 0 or step > 1 then
@@ -1267,6 +1481,8 @@ local function onFrame(dt: number)
 	end
 	Mirror.read()
 	Ticker.step(t, step)
+	State.frameT = t
+	State.inSim = false
 	Anim.step(t, step)
 	retryTeleports(t)
 	Lock.step()
@@ -1283,6 +1499,7 @@ local function onFrame(dt: number)
 	end
 	Mirror.write()
 	countRates(t)
+	stepping = false
 end
 
 local function onUpload(player: any, payload: any)
@@ -1369,7 +1586,9 @@ function Server.start(opts: { [string]: any }?): boolean
 	for _, player in Players:GetPlayers() do
 		onPlayerAdded(player)
 	end
+	pruneFocus()
 	rateT = now()
+	RunService.PreSimulation:Connect(onPreSimulation)
 	RunService.PostSimulation:Connect(onFrame)
 	return true
 end

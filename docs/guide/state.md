@@ -110,7 +110,7 @@ than the value already applied for that field is skipped (`stateStale`). Event f
 | `mirrorOn` | `"model"`, `"player"` | `"model"` | mirror on the owning `Player` instead of the model |
 | `mirrorNil` | string, number or boolean | `nil` | the attribute value written when the field is `nil` |
 | `values` | list of strings | | the values of an `enum` (or of an event's `enum` payload) |
-| `payload` | a type name | none | an event's payload |
+| `payload` | a type name, or a table of named members | none | an event's payload ([events](#events)) |
 | `history` | number | `Config.StateHistory` (32) | changes of this field kept per entity for `Tide.stateAt` |
 
 | Type | Value | Bytes |
@@ -122,7 +122,8 @@ than the value already applied for that field is skipped (`stateStale`). Event f
 | `ref` | another Tide entity (model or handle), or `nil` | 2 |
 | `enum` | one of `values`, or `nil` | 1 |
 | `yaw` | a horizontal direction (`Vector3`, or an angle in radians) | 2 (0.0055°) |
-| `pos` | `Vector3` | 12 |
+| `pos`, `vector` | `Vector3` (two names for one type: a position, a velocity, any vector) | 12 |
+| `cframe` | `CFrame` (position as `f32`, rotation to under 0.1°) | 16 |
 | `event` | no value: `Tide.fire` pulses it, with an optional payload | 0 + payload |
 
 A field's value at its default costs no value bytes. Values are stored on the server exactly as
@@ -186,6 +187,45 @@ end)
 
 `Tide.get` and `Tide.stateAt` of an event field return the stamp of the latest fire and its payload.
 
+### Payloads with several values
+
+One event often needs more than one value: a kick has a position, a velocity and a kicker. Give the
+payload **named members** (v0.5), each a type name or `{ type = "enum", values = { ... } }`:
+
+```lua
+Tide.state("Ball", {
+	Kick = {
+		type = "event",
+		payload = {
+			Position = "pos",
+			Velocity = "vector",
+			By = "ref",
+			Kind = { type = "enum", values = { "pass", "shot", "header" } },
+			PressAt = "time",
+		},
+	},
+})
+
+-- server: the stamp Tide.bump returns puts the event on the ball's change of direction
+local stamp = Tide.bump(ball)
+Tide.fire(ball, "Kick", { Position = p, Velocity = v, By = character, Kind = "shot" }, stamp)
+
+-- client: when the ball's clock reaches the kick
+Tide.changed(ball, "Kick", function(kick, _, t)
+	playKickVfx(kick.Position, kick.Velocity, kick.By, kick.Kind)
+end)
+```
+
+- Members can be any value type (`bool`, the numbers, `time`, `ref`, `enum`, `yaw`, `pos` / `vector`,
+  `cframe`); 1 to 32 per payload, no nesting.
+- A member you leave out of a fire is its type's default: `false`, `0`, or `nil` (`time`, `ref`, `enum`,
+  `yaw`, `pos`, `cframe`), and costs no bytes. An unknown member name or a wrong type is an error.
+- Listeners, `Tide.get` and `Tide.stateAt` get a frozen table. `ref` members read as models, and as
+  `nil` once that entity is gone; `time` members are absolute server times on the 0.5 ms grid.
+- On the wire: 1 byte of presence bits (2 for 9 to 16 members, 4 above), then the values present. The
+  kick above with `Position`, `Velocity` and `By` is a 33-byte group (5 header, 1 field, 1 presence,
+  12 + 12 + 2).
+
 ## Listening
 
 ```lua
@@ -199,8 +239,9 @@ call runs in its own thread.
 ## State-only entities
 
 An entity of a kind with `motion = false` has state but no motion. Tide sends no samples for it,
-doesn't draw or anchor it, and never culls it. Use it for something Tide doesn't move yet, such as a
-ball your own code simulates and draws.
+doesn't draw or anchor it, and never culls it. Use it for something whose motion travels some other
+way. (A ball the server simulates can travel with Tide since v0.5, state included: see
+[Balls and projectiles](/guide/physics-bodies). `Tide.clock` works for those entities too.)
 
 ```lua
 -- server
@@ -243,11 +284,12 @@ Reliable means a lost packet holds later messages back by about one round trip. 
 its stamp, though, so a late one applies as soon as it arrives instead of at a wrong time.
 
 Sets and the flush on the server, and receiving and applying on a client, allocate nothing in steady
-state for refs, numbers, booleans, times and events (`yaw` and `pos` values are `Vector3`s).
+state for refs, numbers, booleans, times and events (`yaw`, `pos` and `cframe` values are `Vector3`s
+and `CFrame`s; a payload with members is one table per fire on the server and per receive on a client).
 
 ## Limits
 
-- 127 fields per kind; names of 1 to 64 characters; enums of up to 255 values.
+- 127 fields per kind; names of 1 to 64 characters; enums of up to 255 values; 32 members per payload.
 - 64 changes queued per entity on a client (when full, the oldest applies early: `stateOverflow`);
   `Config.StateApplyPerFrame` (128) applied per frame.
 - Stamps: 0.5 ms; `time` values to 0.5 ms within ±16 s of their stamp (else exact, 10 bytes).

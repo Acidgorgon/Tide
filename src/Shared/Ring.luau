@@ -5,6 +5,10 @@
 -- Samples are addressed by a logical index that only grows; the newest is `last`,
 -- the oldest `last - n + 1`. Physical position of logical i is i % cap + 1.
 -- Samples are kept sorted by time: a late (out-of-order) sample is inserted in place.
+-- A ring made with vel = true (kinds with velocity = true, v0.5) also keeps each sample's
+-- linear velocity and spin: push the sample, then setVel at the index push returned.
+-- Flags (fl): bit0 teleport (as on the wire), Ring.CUT = the motion changes abruptly at this
+-- sample (velocity rings only).
 
 export type Ring = {
 	cap: number,
@@ -21,18 +25,37 @@ export type Ring = {
 	qy: { number },
 	qz: { number },
 	qw: { number },
+	vel: boolean,
+	vx: { number },
+	vy: { number },
+	vz: { number },
+	wx: { number },
+	wy: { number },
+	wz: { number },
 	lastTele: number, -- time of the newest teleport sample (-inf if none)
 }
 
 local Ring = {}
 
-function Ring.new(cap: number, full: boolean): Ring
+Ring.CUT = 8
+
+local NONE = table.freeze({}) :: { number } -- velocity arrays of rings without velocity (never read)
+
+function Ring.new(cap: number, full: boolean, vel: boolean?): Ring
 	local q = if full then cap else 0
+	local v = vel == true
 	return {
 		cap = cap,
 		last = 0,
 		n = 0,
 		full = full,
+		vel = v,
+		vx = if v then table.create(cap, 0) else NONE,
+		vy = if v then table.create(cap, 0) else NONE,
+		vz = if v then table.create(cap, 0) else NONE,
+		wx = if v then table.create(cap, 0) else NONE,
+		wy = if v then table.create(cap, 0) else NONE,
+		wz = if v then table.create(cap, 0) else NONE,
 		t = table.create(cap, 0),
 		x = table.create(cap, 0),
 		y = table.create(cap, 0),
@@ -66,6 +89,14 @@ local function store(r: Ring, p: number, t: number, x: number, y: number, z: num
 		r.qz[p] = qz
 		r.qw[p] = qw
 	end
+	if r.vel then
+		r.vx[p] = 0
+		r.vy[p] = 0
+		r.vz[p] = 0
+		r.wx[p] = 0
+		r.wy[p] = 0
+		r.wz[p] = 0
+	end
 end
 
 local function move(r: Ring, from: number, to: number)
@@ -80,6 +111,14 @@ local function move(r: Ring, from: number, to: number)
 		r.qy[to] = r.qy[from]
 		r.qz[to] = r.qz[from]
 		r.qw[to] = r.qw[from]
+	end
+	if r.vel then
+		r.vx[to] = r.vx[from]
+		r.vy[to] = r.vy[from]
+		r.vz[to] = r.vz[from]
+		r.wx[to] = r.wx[from]
+		r.wy[to] = r.wy[from]
+		r.wz[to] = r.wz[from]
 	end
 end
 
@@ -127,6 +166,20 @@ function Ring.push(r: Ring, t: number, x: number, y: number, z: number, yaw: num
 	end
 	store(r, (k + 1) % cap + 1, t, x, y, z, yaw, fl, qx, qy, qz, qw)
 	return k + 1
+end
+
+-- Velocity and spin of the sample at logical index li (as push returned it; velocity rings).
+function Ring.setVel(r: Ring, li: number, vx: number, vy: number, vz: number, wx: number, wy: number, wz: number)
+	if li <= 0 or not r.vel then
+		return
+	end
+	local p = li % r.cap + 1
+	r.vx[p] = vx
+	r.vy[p] = vy
+	r.vz[p] = vz
+	r.wx[p] = wx
+	r.wy[p] = wy
+	r.wz[p] = wz
 end
 
 -- Newest sample time (or -inf when empty).

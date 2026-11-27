@@ -13,6 +13,16 @@
 --
 -- Packing uses plain float arithmetic on whole numbers below 2^32 (exact in f64),
 -- which benchmarked faster than bit32 calls and buffer.writebits (tests/bench_codec.luau).
+--
+-- Velocity (v0.5, kinds with velocity = true): linear velocity and spin (angular velocity)
+-- follow the sample, described by a header byte that travels in front of the record (see
+-- Server/Relay):
+--   bit0 VEL        a linear velocity follows (else it is zero)
+--   bit1 SPIN       a spin follows (else it is zero)
+--   bit2 VEL_WIDE   the velocity is 3 x f32 (else 3 x i16 in 1/32 stud/s, +-1023.97)
+--   bit3 SPIN_WIDE  the spin is 3 x f32 (else 3 x i16 in 1/64 rad/s, +-511.98)
+--   bit4 CUT        the motion changes abruptly at this sample (Tide.bump: a kick, a bounce)
+--   bits 5-7 are zero (a receiver stops reading the packet otherwise).
 
 local Codec = {}
 
@@ -20,8 +30,20 @@ Codec.TELEPORT = 1
 Codec.FULL = 2
 Codec.ABS = 4
 
+Codec.VEL = 1
+Codec.SPIN = 2
+Codec.VEL_WIDE = 4
+Codec.SPIN_WIDE = 8
+Codec.CUT = 16
+Codec.MOTION_MAX = 31 -- every defined header bit
+
 local SCALE = 64
 local INV_SCALE = 1 / 64
+local VEL_SCALE = 32 -- 1/32 stud/s
+local INV_VEL_SCALE = 1 / 32
+local SPIN_SCALE = 64 -- 1/64 rad/s
+local INV_SPIN_SCALE = 1 / 64
+local I16_LIMIT = 32767
 local LIMIT = 65536 -- quanta each side of the origin
 local YAW_TO_Q = 1024 / (2 * math.pi)
 local Q_TO_YAW = (2 * math.pi) / 1024
@@ -39,6 +61,9 @@ local writeu8 = buffer.writeu8
 local readu8 = buffer.readu8
 local writeu16 = buffer.writeu16
 local readu16 = buffer.readu16
+local writei16 = buffer.writei16
+local readi16 = buffer.readi16
+local huge = math.huge
 
 local ox, oy, oz = 0, 0, 0
 
@@ -260,6 +285,134 @@ function Codec.quantize(
 	Codec.write(scratch, 0, x, y, z, yaw, flags, qx, qy, qz, qw, cx, cy, cz)
 	local _, rx, ry, rz, ryaw, rflags, rqx, rqy, rqz, rqw = Codec.read(scratch, 0, cx, cy, cz)
 	return rx, ry, rz, ryaw, rflags, rqx, rqy, rqz, rqw
+end
+
+--------------------------------------------------------------------------------
+-- Velocity (v0.5)
+--------------------------------------------------------------------------------
+
+local f32scratch = buffer.create(4)
+
+local function toF32(v: number): number
+	if v ~= v or v == huge or v == -huge then
+		return 0
+	end
+	writef32(f32scratch, 0, v)
+	return readf32(f32scratch, 0)
+end
+
+-- A vector as a receiver decodes it: on the i16 grid when all three components fit, else
+-- f32 (non-finite components become 0). Idempotent, so the value kept in history is the value
+-- every later encode sends.
+local function quantize3(x: number, y: number, z: number, scale: number, inv: number): (number, number, number)
+	local qx, qy, qz = round(x * scale), round(y * scale), round(z * scale)
+	if qx >= -I16_LIMIT and qx <= I16_LIMIT and qy >= -I16_LIMIT and qy <= I16_LIMIT and qz >= -I16_LIMIT and qz <= I16_LIMIT then
+		return qx * inv, qy * inv, qz * inv
+	end
+	x, y, z = toF32(x), toF32(y), toF32(z)
+	qx, qy, qz = round(x * scale), round(y * scale), round(z * scale)
+	if qx >= -I16_LIMIT and qx <= I16_LIMIT and qy >= -I16_LIMIT and qy <= I16_LIMIT and qz >= -I16_LIMIT and qz <= I16_LIMIT then
+		return qx * inv, qy * inv, qz * inv -- f32 rounding (or a non-finite component) brought it into range
+	end
+	return x, y, z
+end
+
+-- Linear velocity (studs/s) and spin (rad/s) as receivers decode them.
+function Codec.quantizeMotion(
+	vx: number,
+	vy: number,
+	vz: number,
+	wx: number,
+	wy: number,
+	wz: number
+): (number, number, number, number, number, number)
+	vx, vy, vz = quantize3(vx, vy, vz, VEL_SCALE, INV_VEL_SCALE)
+	wx, wy, wz = quantize3(wx, wy, wz, SPIN_SCALE, INV_SPIN_SCALE)
+	return vx, vy, vz, wx, wy, wz
+end
+
+-- Bytes of velocity data that follow a sample whose header is `hdr`.
+function Codec.motionSize(hdr: number): number
+	local size = 0
+	if hdr % 2 == 1 then
+		size += if (hdr // 4) % 2 == 1 then 12 else 6
+	end
+	if (hdr // 2) % 2 == 1 then
+		size += if (hdr // 8) % 2 == 1 then 12 else 6
+	end
+	return size
+end
+
+-- Writes one vector (nothing when it is zero); returns the offset after it and its header
+-- bits (0 none, 1 narrow, 1 + 4 wide; the caller shifts them for the spin).
+local function write3(b: buffer, off: number, x: number, y: number, z: number, scale: number): (number, number)
+	local qx, qy, qz = round(x * scale), round(y * scale), round(z * scale)
+	if qx >= -I16_LIMIT and qx <= I16_LIMIT and qy >= -I16_LIMIT and qy <= I16_LIMIT and qz >= -I16_LIMIT and qz <= I16_LIMIT then
+		if qx == 0 and qy == 0 and qz == 0 then
+			return off, 0
+		end
+		writei16(b, off, qx)
+		writei16(b, off + 2, qy)
+		writei16(b, off + 4, qz)
+		return off + 6, 1
+	end
+	-- out of range or non-finite (NaN fails every comparison): f32, non-finite as 0
+	writef32(b, off, toF32(x))
+	writef32(b, off + 4, toF32(y))
+	writef32(b, off + 8, toF32(z))
+	return off + 12, 5
+end
+
+-- Writes the velocity data of a sample at `off` (at most 24 B); returns the offset after it
+-- and the header bits VEL / SPIN / VEL_WIDE / SPIN_WIDE (the caller adds CUT).
+function Codec.writeMotion(
+	b: buffer,
+	off: number,
+	vx: number,
+	vy: number,
+	vz: number,
+	wx: number,
+	wy: number,
+	wz: number
+): (number, number)
+	local hv, hw
+	off, hv = write3(b, off, vx, vy, vz, VEL_SCALE)
+	off, hw = write3(b, off, wx, wy, wz, SPIN_SCALE)
+	return off, hv + hw * 2
+end
+
+local function read3(b: buffer, off: number, wide: boolean, inv: number): (number, number, number)
+	if wide then
+		local x, y, z = readf32(b, off), readf32(b, off + 4), readf32(b, off + 8)
+		if x ~= x or x == huge or x == -huge then
+			x = 0
+		end
+		if y ~= y or y == huge or y == -huge then
+			y = 0
+		end
+		if z ~= z or z == huge or z == -huge then
+			z = 0
+		end
+		return x, y, z
+	end
+	return readi16(b, off) * inv, readi16(b, off + 2) * inv, readi16(b, off + 4) * inv
+end
+
+-- Reads the velocity data described by `hdr` (the caller checked the length with motionSize).
+-- Returns the offset after it, the linear velocity and the spin (always finite).
+function Codec.readMotion(b: buffer, off: number, hdr: number): (number, number, number, number, number, number, number)
+	local vx, vy, vz, wx, wy, wz = 0, 0, 0, 0, 0, 0
+	if hdr % 2 == 1 then
+		local wide = (hdr // 4) % 2 == 1
+		vx, vy, vz = read3(b, off, wide, INV_VEL_SCALE)
+		off += if wide then 12 else 6
+	end
+	if (hdr // 2) % 2 == 1 then
+		local wide = (hdr // 8) % 2 == 1
+		wx, wy, wz = read3(b, off, wide, INV_SPIN_SCALE)
+		off += if wide then 12 else 6
+	end
+	return off, vx, vy, vz, wx, wy, wz
 end
 
 -- Sample-age field of relay records, in 0.5 ms ticks: u8 0..254, or 255 + u16.

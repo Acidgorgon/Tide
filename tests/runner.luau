@@ -20,6 +20,7 @@ Mock.installGlobals()
 local T = {}
 T.Mock = Mock
 T.ROOT = ROOT
+T.filter = FILTER -- the name filter given on the command line, if any
 T.SRC = ROOT .. "/src"
 
 local results = { passed = 0, failed = 0, failures = {} }

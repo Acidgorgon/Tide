@@ -40,7 +40,7 @@ so clients use the server's value.
 | Field | Default | Meaning |
 |---|---|---|
 | `HistorySize` | `128` | Samples kept per entity for `Tide.at` / `Tide.latest`. |
-| `ReceiverBytesPerSecond` | `40960` | Relay budget per receiving player; far records are dropped first. |
+| `ReceiverBytesPerSecond` | `40960` | Relay budget per receiving player; far records are dropped first. Stop repeats (kind option [`restRepeats`](/reference/api#tide-kind)) are not held back by it, and are charged to it. |
 | `InterestEvery` | `0.1` | Seconds between distance tier recomputes. |
 | `Hysteresis` | `4` | Studs of hysteresis around the `near` / `far` / `cull` boundaries. |
 | `SlotQuarantine` | `2.0` | Seconds before a freed entity slot is reused. |
@@ -53,7 +53,9 @@ so clients use the server's value.
 | `lockMode` | `"root"` | server | `"root"`: non-replicated locker inside the root part. `"anchored"`: anchored locker in the server camera (fallback). Anything else is an error at start. |
 | `lockHumanoidStates` | `false` | server | Or a list of `Enum.HumanoidStateType` disabled on the server's Humanoid while locked. |
 
-See [Players: the lock](/guide/players#the-lock).
+See [Players: the lock](/guide/players#the-lock). These fields are for client-owned entities; a
+server-owned body is locked per kind, with the kind option
+[`lock`](/guide/physics-bodies#roblox-s-own-replication) (v0.5).
 
 ## Client
 

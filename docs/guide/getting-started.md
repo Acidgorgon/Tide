@@ -105,5 +105,5 @@ local delay = Tide.delay(otherCharacter) -- seconds behind server time
 local vel = Tide.velocity(otherCharacter)
 ```
 
-Next: [Players](/guide/players), [Bots and NPCs](/guide/entities) or
-[Time and rewind](/guide/time-and-rewind).
+Next: [Players](/guide/players), [Bots and NPCs](/guide/entities),
+[Balls and projectiles](/guide/physics-bodies) or [Time and rewind](/guide/time-and-rewind).

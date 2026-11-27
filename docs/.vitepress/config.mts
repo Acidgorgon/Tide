@@ -8,7 +8,7 @@ export default defineConfig({
 
   lang: 'en-US',
   title: 'Tide',
-  description: 'Replication for moving things on Roblox: player characters, bots and NPCs on one server timeline.',
+  description: 'Replication for moving things on Roblox: player characters, bots, NPCs and physics bodies on one server timeline.',
 
   themeConfig: {
     ...shared.themeConfig,
@@ -19,7 +19,7 @@ export default defineConfig({
       { text: 'Benchmarks', link: '/benchmarks' },
       shared.nav,
       {
-        text: 'v0.4.1',
+        text: 'v0.5.0',
         items: [{ text: 'Releases', link: 'https://github.com/Acidgorgon/Tide/releases' }],
       },
     ],
@@ -31,6 +31,7 @@ export default defineConfig({
           { text: 'Getting started', link: '/guide/getting-started' },
           { text: 'Players', link: '/guide/players' },
           { text: 'Bots and NPCs', link: '/guide/entities' },
+          { text: 'Balls and projectiles', link: '/guide/physics-bodies' },
           { text: 'Time and rewind', link: '/guide/time-and-rewind' },
           { text: 'Animations', link: '/guide/animations' },
           { text: 'Timeline state', link: '/guide/state' },

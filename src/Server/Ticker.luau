@@ -10,6 +10,16 @@
 -- Teleport flag (receivers snap, no sweep): after handle:teleport, after handle:markTeleport
 -- (at once, or on the first sample near its target), and on a jump longer than the kind's
 -- teleportDistance between two samples.
+-- Kinds with velocity = true (v0.5): each sample also carries the root's linear velocity and
+-- spin, quantized as receivers decode them; a pose that stands still with a new velocity (a
+-- kick, before physics moved the body) is a new sample. Tide.bump (Server.bump) samples out of
+-- tick and marks the sample a cut.
+-- Stop redundancy (kind option restRepeats): the stop sample is the last word receivers get
+-- until the keep-alive, on an unreliable stream. With restRepeats = n the last samples of an
+-- entity that stays unchanged go out again with the relay of each of the next n ticks (Relay:
+-- which ones): the same samples, with their own times (receivers that have them drop the
+-- copies). Any change (a tick that finds the entity moved, a bump, a teleport) ends the
+-- repeats: new samples flow again.
 
 local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)
@@ -34,14 +44,25 @@ local still = State.still
 local markUntil = State.markUntil
 local oxs, oys, ozs = State.ox, State.oy, State.oz
 local markX, markY, markZ = State.markX, State.markY, State.markZ
+local forceCut = State.forceCut
+local bumped = State.bumped
+local restLeft = State.restLeft
+local restDue = State.restDue
+local restList = State.restList
 local counters = State.counters
 
 local quantize = Codec.quantize
+local quantizeMotion = Codec.quantizeMotion
 local read = Rig.read
+local readMotion = Rig.readMotion
 local push = Ring.push
+local setVel = Ring.setVel
+local CUT = Ring.CUT
 
 -- Samples one server-owned entity now. Exposed for teleports and tests.
-function Ticker.sample(slot: number, now: number)
+-- bumpOnly (Tide.bump outside the kind's tick): an unchanged entity is left as it is (no stop
+-- sample, no idle bookkeeping).
+function Ticker.sample(slot: number, now: number, bumpOnly: boolean?)
 	local kind = kinds[slot]
 	local h = hist[slot]
 	local full = h.full -- the ring's own layout (a kind's rotation may change later)
@@ -86,36 +107,84 @@ function Ticker.sample(slot: number, now: number)
 			end
 		end
 	end
+	local vel = h.vel
+	local vx, vy, vz, wx, wy, wz = 0, 0, 0, 0, 0, 0
+	local moved = false -- velocity rings: the velocity or the spin differs from the last sample's
+	if vel then
+		vx, vy, vz, wx, wy, wz = quantizeMotion(readMotion(root))
+		moved = vx ~= h.vx[p] or vy ~= h.vy[p] or vz ~= h.vz[p] or wx ~= h.wx[p] or wy ~= h.wy[p] or wz ~= h.wz[p]
+	end
 	local same = not tele
+		and not moved
 		and x == h.x[p]
 		and y == h.y[p]
 		and z == h.z[p]
 		and yaw == h.yaw[p]
 		and (not full or (qx == h.qx[p] and qy == h.qy[p] and qz == h.qz[p] and qw == h.qw[p]))
 	if same then
+		forceCut[slot] = false -- nothing changed: no cut to mark
+		if bumpOnly then
+			return -- not a tick: stillness is the ticks' to report
+		end
 		if not still[slot] then
 			still[slot] = true
-			push(h, now, x, y, z, yaw, 0, qx, qy, qz, qw)
+			local li = push(h, now, x, y, z, yaw, 0, qx, qy, qz, qw)
+			if vel then
+				setVel(h, li, vx, vy, vz, wx, wy, wz)
+			end
 			sentT[slot] = now
 			heldT[slot] = 0
+			restLeft[slot] = kind.restRepeats
 		elseif now - sentT[slot] >= kind.keepAlive then
-			push(h, now, x, y, z, yaw, 0, qx, qy, qz, qw)
+			local li = push(h, now, x, y, z, yaw, 0, qx, qy, qz, qw)
+			if vel then
+				setVel(h, li, vx, vy, vz, wx, wy, wz)
+			end
 			sentT[slot] = now
 			heldT[slot] = 0
 		else
 			heldT[slot] = now
+			local left = restLeft[slot]
+			if left > 0 then
+				-- the last samples (the stop sample and what led to it) once more
+				restLeft[slot] = left - 1
+				if not restDue[slot] then
+					restDue[slot] = true
+					local n = State.restN + 1
+					State.restN = n
+					restList[n] = slot
+				end
+			end
 		end
 		return
 	end
 	local held = heldT[slot]
 	if held > lastT and not tele then
-		-- rest marker: still at the old pose at the last unchanged tick
-		push(h, held, h.x[p], h.y[p], h.z[p], h.yaw[p], 0, if full then h.qx[p] else 0, if full then h.qy[p] else 0, if full then h.qz[p] else 0, if full then h.qw[p] else 1)
+		-- rest marker: still at the old pose (and velocity) at the last unchanged tick
+		local pvx, pvy, pvz, pwx, pwy, pwz = 0, 0, 0, 0, 0, 0
+		if vel then
+			pvx, pvy, pvz, pwx, pwy, pwz = h.vx[p], h.vy[p], h.vz[p], h.wx[p], h.wy[p], h.wz[p]
+		end
+		local li = push(h, held, h.x[p], h.y[p], h.z[p], h.yaw[p], 0, if full then h.qx[p] else 0, if full then h.qy[p] else 0, if full then h.qz[p] else 0, if full then h.qw[p] else 1)
+		if vel then
+			setVel(h, li, pvx, pvy, pvz, pwx, pwy, pwz)
+		end
 	end
 	heldT[slot] = 0
 	still[slot] = false
+	restLeft[slot] = 0
 	forceTele[slot] = false
-	push(h, now, x, y, z, yaw, if tele then 1 else 0, qx, qy, qz, qw)
+	local fl = if tele then 1 else 0
+	if forceCut[slot] then
+		forceCut[slot] = false
+		if vel then
+			fl += CUT -- only velocity records carry it
+		end
+	end
+	local li = push(h, now, x, y, z, yaw, fl, qx, qy, qz, qw)
+	if vel then
+		setVel(h, li, vx, vy, vz, wx, wy, wz)
+	end
 	sentT[slot] = now
 end
 
@@ -136,11 +205,20 @@ function Ticker.step(now: number, dt: number)
 		end
 		kind.acc = acc
 	end
+	local owed = State.bumpN > 0 -- bumped while physics was stepping: sampled now, tick or not
 	for k = 1, State.count do
 		local slot = active[k]
-		if owner[slot] == false and kinds[slot].tick then
-			Ticker.sample(slot, now)
+		if owner[slot] == false then
+			if kinds[slot].tick then
+				Ticker.sample(slot, now)
+			elseif owed and bumped[slot] then
+				Ticker.sample(slot, now, true)
+			end
 		end
+	end
+	if owed then
+		table.clear(bumped)
+		State.bumpN = 0
 	end
 end
 

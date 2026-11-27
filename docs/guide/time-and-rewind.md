@@ -38,6 +38,20 @@ Tide.drawn(model)    -- the CFrame drawn this frame
 Tide.velocity(model) -- drawn velocity, studs/s
 Tide.latest(model)   -- newest sample received, no delay
 Tide.at(model, t)    -- pose at server time t from this client's buffer
+Tide.timeOf(model)   -- the server time this entity is drawn at
+```
+
+`Tide.timeOf(model)` is `now - Tide.delay(model)` for an entity Tide buffers, now for your own, and
+the function you gave to `Tide.clock` if you gave one. Each entity has its own: two players' characters
+are drawn at slightly different server times, and all server-owned entities of one kind share a delay.
+`Tide.at(a, Tide.timeOf(b))` is where `a` was when `b` was where you see it.
+
+For kinds with `velocity = true` ([Balls and projectiles](/guide/physics-bodies)), samples carry the
+body's velocity and spin, and both calls return them:
+
+```lua
+local cf, velocity, spin, stamp = Tide.latest(ball)   -- the newest sample and its server time
+local cf, velocity, spin = Tide.at(ball, t)           -- the path at server time t
 ```
 
 ## Hit checks with `Tide.at`
@@ -75,8 +89,29 @@ time `t`, using the same interpolation clients draw with. Before the oldest samp
 the oldest; after the newest it returns the newest (no extrapolation on the server). It returns `nil`
 only for something Tide doesn't know.
 
+A held answer looks like any other. When a verdict depends on it (a tackle, an offside line, judged at
+the time a client saw), ask what the history covers first:
+
+```lua
+local oldest, newest = Tide.span(target)
+if oldest == nil or seenAt < oldest or seenAt > newest then
+	return -- the history does not reach seenAt: Tide.at would hold an end
+end
+local cf = Tide.at(target, seenAt)
+```
+
+`Tide.span(target)` returns the server times of the oldest sample kept and of the newest. For a
+server-owned entity at rest `newest` is the last tick that found it unchanged, so a body standing still
+is covered up to now (within a tick); for a client-owned entity it is the newest sample its owner
+sent, which at rest is up to the kind's `keepAlive` old. `nil, nil` for unknown and state-only
+targets. On a client it is the range of the samples that client holds.
+
 `Tide.latest(target)` returns the newest accepted sample: for a locked player that is also where the
 server's copy of the character stands.
+
+For a velocity kind the server's `Tide.at(ball, t)` also returns the velocity and the spin at `t`, and
+`Tide.latest(ball)` the newest sample's velocity, spin and server time: "how fast was the ball going
+when the keeper saw it?" is one call.
 
 ::: tip How much history is there?
 128 samples per entity: about 2 s for a 60 Hz player, 4 s for a 30 Hz bot (longer when it stands still,
@@ -110,6 +145,7 @@ local newest, t = venue:latest(playerId)
 venue:setOwner(playerId, player.UserId) -- applied by Tide's VM at the start of its next frame
 venue:teleport(playerId, kickoffSpot)
 venue:markTeleport(playerId, spot)      -- for a move this VM makes itself
+venue:bump(ballKey)                     -- Tide.bump, after this VM kicked the body
 ```
 
 :::
@@ -125,7 +161,10 @@ Limits:
 - Intents are applied a frame later, with no reply. Read the result back (`Tide.owner` in Tide's VM,
   `venue:latest` here) instead of assuming it. Intents for keys not linked at that time are dropped and
   counted (`linkUnknown`), as are ones that fail (`linkBad`).
-- Each mirrored sample costs one `SharedTable` write (a 73-byte string) plus one for the entity's
+- Each mirrored sample costs one `SharedTable` write (a 73-byte string; 121 bytes for a velocity kind,
+  whose `venue:at` and `venue:latest` return the velocity and spin as well) plus one for the entity's
   newest index; link only what other VMs read.
+- `venue:bump(key)` is applied at the start of Tide's next frame, so the sample is up to a frame later
+  than a `Tide.bump` made in Tide's VM, and it returns no stamp.
 - `SharedTable`'s cross-VM behaviour (atomic `increment`, what a parallel phase sees of writes made in
   the serial phase) is taken from Roblox's documentation and has not been checked in Studio yet.

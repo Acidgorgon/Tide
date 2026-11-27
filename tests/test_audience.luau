@@ -93,6 +93,154 @@ return function(T)
 		T.check(not ok, "bad focus target rejected")
 	end)
 
+	-- v0.5: a focus set before Tide has made the player's receiver (a PlayerAdded handler of
+	-- the game's that ran first, or a call before Tide.start) used to do nothing, silently.
+	T.test("focus before the receiver exists: remembered and applied when Tide meets the player; true / false says which", function()
+		local world = T.world({ latency = 0.02 })
+		local Tide = T.serverTide(world)
+		local State = T.module(world, "Server", "State")
+		local point = Vector3.new(1010, 3, 0)
+		-- the game's PlayerAdded handler, connected before Tide's
+		local results = {}
+		world.server.Players.PlayerAdded:Connect(function(player)
+			T.eq(State.rx[player], nil, "Tide has not met the player yet")
+			table.insert(results, Tide.focus(player, point))
+		end)
+		-- and a player who is in the game before Tide.start
+		local early = world:addPlayer()
+		T.eq(results[1], true, "remembered")
+		T.eq(State.focusPending[early], point)
+		Tide.start({ players = false })
+		local rxEarly = State.rx[early]
+		T.check(rxEarly ~= nil)
+		T.eq(rxEarly.focus, point, "applied at Tide.start")
+		T.eq(next(State.focusPending), nil, "nothing left pending")
+		local p2 = world:addPlayer()
+		T.eq(results[2], true)
+		T.eq(State.rx[p2].focus, point, "applied when the receiver was made")
+		T.eq(next(State.focusPending), nil)
+		for i = 1, 2 do
+			T.clientTide(world, i).start()
+		end
+		local near = world:spawnModel("near", CFrame.new(1000, 3, 0), true)
+		local far = world:spawnModel("far", CFrame.new(2000, 3, 0), true)
+		Tide.add(near, "Npc")
+		Tide.add(far, "Npc")
+		for _ = 1, 10 do
+			world:frame(DT)
+		end
+		for _, player in { early, p2 } do
+			local rx = State.rx[player]
+			T.eq(rx.tier[State.bySlotModel[near]], 1, "tiers around the remembered focus")
+			T.eq(rx.tier[State.bySlotModel[far]], 4)
+		end
+		-- a known receiver: as before, and true
+		T.eq(Tide.focus(p2, Vector3.new(1990, 3, 0)), true)
+		T.eq(State.rx[p2].tier[State.bySlotModel[far]], 1, "at once")
+		T.eq(Tide.focus(p2, nil), true, "cleared")
+		T.eq(State.rx[p2].focus, nil)
+		T.eq(next(State.focusPending), nil)
+	end)
+
+	T.test("focus before the receiver exists: the last call wins, nil forgets, a part is followed", function()
+		local world = T.world({ latency = 0.02 })
+		local Tide = T.serverTide(world)
+		local State = T.module(world, "Server", "State")
+		local a, b, c = world:addPlayer(), world:addPlayer(), world:addPlayer()
+		local ball = T.Mock.newInstance("Part", "Ball")
+		ball.CFrame = CFrame.new(1990, 3, 0)
+		ball.Parent = world.server.Workspace
+		T.eq(Tide.focus(a, Vector3.new(5, 0, 0)), true)
+		T.eq(Tide.focus(a, ball), true, "the last call wins")
+		T.eq(Tide.focus(b, ball), true)
+		T.eq(Tide.focus(b, nil), true, "nil forgets the remembered focus")
+		T.eq(State.focusPending[b], nil)
+		local gone = T.Mock.newInstance("Part", "Gone")
+		gone.CFrame = CFrame.new(1000, 3, 0)
+		gone.Parent = world.server.Workspace
+		T.eq(Tide.focus(c, gone), true)
+		gone.Parent = nil -- destroyed while remembered
+		local ok = pcall(Tide.focus, a, "nowhere")
+		T.check(not ok, "bad target rejected as before")
+		T.eq(State.focusPending[a], ball, "and the remembered focus stands")
+		Tide.start({ players = false })
+		T.eq(State.rx[a].focus, ball)
+		T.eq(State.rx[b].focus, nil)
+		T.eq(next(State.focusPending), nil)
+		for i = 1, 3 do
+			T.clientTide(world, i).start()
+		end
+		local near = world:spawnModel("near", CFrame.new(1000, 3, 0), true)
+		local far = world:spawnModel("far", CFrame.new(2000, 3, 0), true)
+		Tide.add(near, "Npc")
+		Tide.add(far, "Npc")
+		for _ = 1, 10 do
+			world:frame(DT)
+		end
+		local sn, sf = State.bySlotModel[near], State.bySlotModel[far]
+		T.eq(State.rx[a].tier[sf], 1, "the part")
+		T.eq(State.rx[a].tier[sn], 4)
+		T.eq(State.rx[b].tier[sn], 3, "no focus: far, as without one")
+		T.eq(State.rx[c].tier[sn], 3, "a focus part that was gone before it was ever read: as without one")
+		ball.CFrame = CFrame.new(1005, 3, 0)
+		for _ = 1, 10 do
+			world:frame(DT)
+		end
+		T.eq(State.rx[a].tier[sn], 1, "followed")
+		T.eq(Tide.stats().errors, 0)
+	end)
+
+	T.test("focus set, then the player leaves before Tide makes its receiver: nothing kept, false for a player who has left", function()
+		local world = T.world({ latency = 0.02 })
+		local Tide = T.serverTide(world)
+		local State = T.module(world, "Server", "State")
+		-- before Tide.start: Tide hears no PlayerRemoving yet
+		local p1 = world:addPlayer()
+		local p2 = world:addPlayer()
+		T.eq(Tide.focus(p1, Vector3.new(1, 2, 3)), true)
+		T.eq(Tide.focus(p2, Vector3.new(4, 5, 6)), true)
+		world:removePlayer(p1)
+		T.eq(Tide.focus(p1, Vector3.new(1, 2, 3)), false, "the player has left: nothing remembered")
+		T.eq(State.focusPending[p1], nil)
+		world:removePlayer(p2) -- left without another call
+		T.check(State.focusPending[p2] ~= nil, "(still remembered: nothing has looked since)")
+		Tide.start({ players = false })
+		T.eq(next(State.focusPending), nil, "dropped at Tide.start")
+		T.eq(State.rx[p1], nil)
+		T.eq(State.rx[p2], nil)
+		-- after Tide.start: a handler of the game's that runs before Tide's sets a focus, and the
+		-- player is removed in the same breath (kicked in another PlayerAdded handler)
+		local kicked
+		world.server.Players.PlayerAdded:Connect(function(player)
+			if kicked == nil then
+				kicked = player
+				world:removePlayer(player)
+			end
+		end)
+		local p3 = world:addPlayer()
+		T.eq(kicked, p3)
+		T.eq(Tide.focus(p3, Vector3.new(7, 8, 9)), false)
+		T.eq(next(State.focusPending), nil)
+		-- a receiver that leaves takes its focus with it; a call afterwards keeps nothing
+		local p4 = world:addPlayer()
+		T.eq(Tide.focus(p4, Vector3.new(7, 8, 9)), true)
+		T.check(State.rx[p4] ~= nil and State.rx[p4].focus ~= nil)
+		world:removePlayer(p4)
+		T.eq(State.rx[p4], nil)
+		T.eq(Tide.focus(p4, Vector3.new(7, 8, 9)), false)
+		T.eq(next(State.focusPending), nil)
+		-- a PlayerRemoving handler of the game's that still calls focus (the player is on its way
+		-- out, not yet gone): whatever it leaves is dropped the next time Tide looks
+		local p5 = world:addPlayer()
+		world.server.Players.PlayerRemoving:Connect(function(player)
+			Tide.focus(player, Vector3.new(0, 0, 0))
+		end)
+		world:removePlayer(p5)
+		world:addPlayer()
+		T.eq(next(State.focusPending), nil, "pruned when the next player joined")
+		T.eq(Tide.stats().errors, 0)
+	end)
+
 	T.test("audience: receivers outside get nothing; list, set, function, nil; owner unaffected", function()
 		local s = setup()
 		for i = 1, 3 do
