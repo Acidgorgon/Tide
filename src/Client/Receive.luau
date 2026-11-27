@@ -24,7 +24,7 @@
 -- and is dropped before anything looks at it (no second onSample, no need, nothing stored).
 -- Two copies decode from different packet times, so their times agree to rounding, not to
 -- the bit. A copy that arrives first (the original was lost) is stored like any sample, in
--- its place in time (counted as late when a newer one is held).
+-- its place in time (refused, and counted late, when it is older than everything held).
 
 local Shared = script.Parent.Parent.Shared
 local Config = require(Shared.Config)

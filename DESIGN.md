@@ -527,7 +527,8 @@ shortened the keep-alive to 0.1 s to bound it (241 B/s for a resting ball instea
 - Receivers: `Client/Receive` drops a record within a quarter tick of a sample it holds before
   anything looks at it (counter `repeats`): no `onSample`, nothing stored, no buffer need. Exact
   duplicates used to be refused by the ring and counted `late`; they count `repeats` now. A copy of a
-  sample the client lacks is stored in its place in time, like any late sample.
+  sample the client lacks is stored in its place in time, like any sample that arrives out of
+  order (and refused, as those are, when it is older than everything the client holds).
 - Audience and budget: a repeat goes to every receiver in tiers 1 to 3, never to culled ones or ones
   outside the audience. It is not thinned and not held back by the byte budget, and is charged to it.
   Held back, a receiver over budget would lose exactly the word it most needs; the cost is bounded

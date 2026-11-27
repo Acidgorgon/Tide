@@ -323,8 +323,9 @@ venue:bump(key)   -- Tide.bump, applied at the start of the Tide VM's next frame
   leaves with the next frame's reliable message; stamped with the bump's time it still applies with
   the sample on clients that buffer.
 - A sample a client first gets from a repeat arrives one to `restRepeats` ticks later than it would
-  have: it counts as a late sample (`late`) when a newer one is already held, and like any sample that
-  arrives late it can raise the measured delay a little.
+  have. It is stored in its place in time; when it is the newest the client has, it can raise the
+  measured delay a little, like any sample that arrives late. A client that holds nothing as old (it
+  has only just met the entity) refuses it, as it refuses any sample older than its buffer (`late`).
 - At the very end of a segment that ends in a cut, the reported velocity is the path's own slope, which
   carries the positions' quantization: up to (1/32 stud) / segment length per axis (0.94 studs/s at
   30 Hz, 1.9 at 60 Hz). A cut closer than 12.5 ms behind a sample reports that sample's velocity instead.
