@@ -207,9 +207,9 @@ return function(T)
 			T.check(without.tideOver >= 1)
 			-- the reader one frame behind arrivals: no stop is lost; what is left is the one frame
 			-- it draws after two packets in a row were lost, when it is past its newest sample
-			-- whatever is sent later (a frame of travel at most; the same in mid flight, where
-			-- projecting is right)
-			T.check(with.tight < 1.01 * SPEED * DT, "one frame behind arrivals: " .. with.tight)
+			-- whatever is sent later (a frame of travel and the link's jitter at most; the same
+			-- in mid flight, where projecting is right)
+			T.check(with.tight < SPEED * (DT + JITTER), "one frame behind arrivals: " .. with.tight)
 			T.check(with.tight < without.tight / 4, "against a lost stop without the repeats: " .. without.tight)
 			-- 30 % loss: four copies are all lost in about one stop of 120
 			local with30, without30 = rows[`{latency}/0.3/2/1`], rows[`{latency}/0.3/0/1`]
