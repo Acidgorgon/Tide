@@ -45,6 +45,7 @@ games without one.
 | `Tide.Velocity.samples` | client | velocity records received |
 | `Tide.Velocity.bytes` | server | bytes of those records sent, over all receivers (part of the `Relay` channel's total, not on top of it) |
 | `Tide.Bump` | server | `Tide.bump` calls |
+| `Tide.Flush` | server | `Tide.flush` calls that sent something |
 
 `Tide.stats()` keeps working as before and counts the same bytes (`relayBytes`, `inBytes`,
 `uploadBytes`), and the same things as these counters (`velocitySamples`, `velocityBytes`, `bumps`,

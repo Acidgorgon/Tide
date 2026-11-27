@@ -65,6 +65,7 @@ Tide.start(opts?)                 -- server: { players = true, ...Config fields 
 Tide.kind(name, opts)             -- rate, rotation, near, far, cull, farEvery, buffer, extrapolate, ...
 Tide.added(fn) / Tide.removed(fn)
 Tide.at(model, t) / Tide.latest(model)   -- velocity kinds: also velocity and spin (latest: and its stamp)
+Tide.span(model) -> oldest, newest       -- the server times Tide.at answers without holding an end
 Tide.owner(model) / Tide.isMine(model)
 Tide.stats() / Tide.Config
 
@@ -73,7 +74,8 @@ local handle = Tide.add(model, kind?, owner?)  -- kind defaults to "Bot"
 handle:teleport(cf) / handle:setOwner(player?) / handle:remove() / handle:alive()
 handle:markTeleport(target?)      -- snap a jump you made yourself
 Tide.bump(model) -> stamp         -- sample now, out of tick (after a kick); handle:bump()
-handle:setAudience(fn | { Player } | nil) / Tide.focus(player, part | Vector3 | nil)
+Tide.flush() -> sent              -- send bumped samples now (after kicks made in Heartbeat)
+handle:setAudience(fn | { Player } | nil) / Tide.focus(player, part | Vector3 | nil) -> boolean
 handle:setOrigin(origin?)         -- far venues keep the 10-byte record
 handle:link(name, key)            -- rewind and intents from other VMs (Actors)
 Tide.handle(model) / Tide.remove(model)
@@ -85,6 +87,7 @@ Tide.at(model, t, extrapolate?)   -- the buffered path at any server time, e.g. 
 
 -- a physics body the server simulates (a ball, a projectile), v0.5
 Tide.kind("Ball", { velocity = true, rotation = "full", apply = "none", lock = true })
+-- restRepeats (2 for velocity kinds): a stop goes out again on the next ticks, so it is not lost
 
 -- another VM of the server (an Actor)
 local venue = require(ReplicatedStorage.Tide.Shared.Link).open("Venue1")
@@ -103,6 +106,13 @@ return velocity and spin on both sides, `apply = "none"` can be declared on the 
 stops Roblox replicating a server-owned body (check in Studio first). Timeline state gets `"vector"` and
 `"cframe"` values and event payloads with named members. All of it is opt-in: a game that uses none of
 it sends the same bytes as v0.4.2.
+
+v0.5 also, from the first game that used it: the kind option `restRepeats` (a stop is sent again on the
+next ticks, with the samples that led to it: on by default for velocity kinds, so a lost packet no
+longer leaves a stopped ball running on until the keep-alive), `Tide.flush()` (samples bumped in a
+`Heartbeat` connection leave in that frame, not the next), `Tide.focus` set before Tide knows the
+player is kept (and returns whether it was), and `Tide.span(model)` (the server times `Tide.at` can
+answer without holding an end of the history).
 
 Full reference: [API](https://acidgorgon.github.io/Tide/reference/api),
 [Config](https://acidgorgon.github.io/Tide/reference/config),

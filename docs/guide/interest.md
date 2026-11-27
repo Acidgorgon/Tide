@@ -48,6 +48,10 @@ Tide.focus(player, nil)                   -- none
 
 A character entity, while the player has one, still wins.
 
+`Tide.focus` may be called as soon as you have the player: in your own `PlayerAdded` connection, even
+one that runs before Tide's, or before `Tide.start`. Tide keeps the focus until it meets the player.
+It returns `true` when the focus was set or kept, and `false` when the player has left the game.
+
 ## Audiences
 
 Some entities matter to only some players: the bodies of one match on a server running several. Give

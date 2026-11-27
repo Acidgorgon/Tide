@@ -63,6 +63,13 @@ records until the end of the buffer:
 Header: 10 bytes per packet. Each record is encoded once per frame and copied as-is into every
 receiver's packet. An entity's several samples in one frame are several records.
 
+A sample may be sent more than once: a kind with `restRepeats` sends an entity's last three samples
+again after it stopped (ordinary records, no flag, protocol unchanged). Its copies decode to the same
+time from every packet: for those kinds `dt` is counted between whole 0.5 ms steps, the packet's and
+the sample's own (`round(frameTime / 0.0005) - round(sampleTime / 0.0005)`). A receiver drops a record
+whose time is within a quarter step of a sample it holds. `Tide.flush` sends an ordinary relay frame
+between two of the server's frames.
+
 ### Velocity records
 
 Only for kinds with `velocity = true` (v0.5, [guide](/guide/physics-bodies)). Slot 0 is never an

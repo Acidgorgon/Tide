@@ -9,7 +9,7 @@
 -- Counters (v0.5, lh.count through `counter`): "Tide.Velocity.samples" (server: samples of
 -- velocity kinds encoded; client: velocity records received), "Tide.Velocity.bytes" (server:
 -- bytes of their records sent, part of the "Relay" channel's total), "Tide.Bump" (server:
--- Tide.bump calls).
+-- Tide.bump calls), "Tide.Flush" (server: Tide.flush calls that sent something).
 
 local Lighthouse = {}
 

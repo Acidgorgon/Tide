@@ -89,6 +89,23 @@ time `t`, using the same interpolation clients draw with. Before the oldest samp
 the oldest; after the newest it returns the newest (no extrapolation on the server). It returns `nil`
 only for something Tide doesn't know.
 
+A held answer looks like any other. When a verdict depends on it (a tackle, an offside line, judged at
+the time a client saw), ask what the history covers first:
+
+```lua
+local oldest, newest = Tide.span(target)
+if oldest == nil or seenAt < oldest or seenAt > newest then
+	return -- the history does not reach seenAt: Tide.at would hold an end
+end
+local cf = Tide.at(target, seenAt)
+```
+
+`Tide.span(target)` returns the server times of the oldest sample kept and of the newest. For a
+server-owned entity at rest `newest` is the last tick that found it unchanged, so a body standing still
+is covered up to now (within a tick); for a client-owned entity it is the newest sample its owner
+sent, which at rest is up to the kind's `keepAlive` old. `nil, nil` for unknown and state-only
+targets. On a client it is the range of the samples that client holds.
+
 `Tide.latest(target)` returns the newest accepted sample: for a locked player that is also where the
 server's copy of the character stands.
 

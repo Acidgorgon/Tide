@@ -62,6 +62,50 @@ and on a client start from the same numbers.
 A ball at rest sends nothing but a keep-alive every `keepAlive` (0.5 s). A velocity that changes while
 the pose stands still (a kick, before physics has moved the body) is a new sample.
 
+## Stops: `restRepeats`
+
+The stream is unreliable, and a receiver carries a body on at its last velocity when it hears nothing
+(`extrapolate`, or your own renderer's projection). So the one packet that must not be lost is the one
+that says the body stopped: without it the ball runs on until the next keep-alive and then comes back.
+
+`restRepeats = n` sends that word again. On each of the next `n` ticks that find the body unchanged,
+the relay sends its last three samples once more: the stop sample, the sample that brought the body to
+rest (with its teleport and cut flags and its velocity), and the one before it (the last of the motion,
+or the rest marker of a body that was bumped while it rested). They are the same samples at the same
+times: a client that has them drops the copies before anything looks at them (no second `onSample`,
+nothing stored, no effect on the delay), and a client that lost them stores them in their place.
+
+It defaults to **2 for kinds with `velocity = true`** and 0 for every other kind. Measured in the mock
+on a ball rolling at 25 studs/s that stops dead and stays still (60 Hz, `keepAlive = 1`, 1000 stops a
+row, the worst error in the 0.4 s after the stop at the time Tide draws, and how many stops passed
+0.25 studs):
+
+| Loss | `restRepeats = 0` | 1 | 2 | 4 |
+|---|---|---|---|---|
+| 10 %, 60 ms | 2.09 studs (8) | 2.08 (2) | **0.11 (0)** | 0.10 (0) |
+| 10 %, 200 ms | 2.09 (7) | 2.08 (2) | **0.09 (0)** | 0.10 (0) |
+| 30 %, 60 ms | 2.09 (104) | 2.09 (40) | **2.08 (5)** | 0.51 (5) |
+| 30 %, 200 ms | 2.09 (105) | 2.09 (40) | **2.08 (4)** | 0.53 (2) |
+
+A stop is lost when every packet that carries it is lost: one stop in a hundred at 10 % loss without
+repeats (a body that stops dead already sends two samples at rest), one in ten thousand with 2. Raise
+it for links worse than that; 8 is the most. What is left with it is a tenth of a stud for a frame or
+two: the sample of the stop itself was lost with its two copies, and the path bends into the stop
+sample a tick later. A renderer of your own that draws closer behind arrivals than Tide does (one frame
+behind, say) is past its newest sample for a frame whenever two packets in a row are lost, whatever is
+sent afterwards: up to a frame of travel (0.42 studs here), with or without a stop.
+
+The cost is two packets a stop: 140 B for that ball (the header and three records, 28 + 16 + 16 B,
+twice), nothing in flight and nothing at rest. With repeats the keep-alive no longer has to be short to protect stops:
+`keepAlive = 1` costs 26 B/s for a resting ball where `keepAlive = 0.1` cost 222 B/s.
+
+Repeats go to every receiver that gets the entity at all (near, mid and far), are not thinned and not
+held back by the [byte budget](/guide/interest) (they are charged to it), and never go to receivers
+outside the entity's audience or beyond `cull`. Anything new ends them: a tick that finds the body
+moved, a bump, a teleport, an owner change, a removal. Keep-alives are not repeated. Plain kinds may
+set `restRepeats` too (a door, a platform that must not overshoot); client-owned entities are never
+repeated (their owner's uploads have `Config.UploadRedundancy`).
+
 Velocity kinds are server-owned. Giving such an entity an owner (`Tide.add(model, "Ball", player)`,
 `handle:setOwner(player)`) is an error: uploads carry no velocity.
 
@@ -88,9 +132,29 @@ When the sample is taken depends on where the call is made in the server's frame
 | a remote handler, a `Heartbeat` connection, a resumed thread (physics is not stepping) | at once, with the pose the last frame ended on and the velocity you just set | the last frame's time (1 ms after the entity's newest sample if it was already sampled that frame) |
 | between `PreSimulation` and Tide's step of that frame (`Stepped`, `PreSimulation` connections) | at Tide's step of that frame, whatever the kind's tick, with the pose physics ends on | the time of the call (the sample's is within the frame after it) |
 
-Nothing is sent if neither the pose nor the velocity changed since the newest sample. A bump made after
-Tide's step of a frame is recorded at once but leaves with the next frame's packet. Bumping a kind
+Nothing is sent if neither the pose nor the velocity changed since the newest sample. Bumping a kind
 without `velocity` gives an out-of-tick sample in the usual record (no cut).
+
+### Kicks made in `Heartbeat`: `Tide.flush`
+
+Tide relays in its own step of the frame, on `PostSimulation`. A bump made after it (a `Heartbeat`
+connection, a thread the scheduler resumes late in the frame) is sampled at once but would leave with
+the next frame's packet: a frame late. `Tide.flush()` sends what was bumped since the last relay now:
+
+```lua
+RunService.Heartbeat:Connect(function()
+	detectKicks()     -- sets velocities and calls Tide.bump(ball)
+	Tide.flush()      -- once, after them
+end)
+```
+
+It returns the number of entities it sent. Call it wherever it is convenient: with nothing bumped it
+does nothing, in the physics window it does nothing (the frame's own relay is about to run), and
+calling it twice sends nothing twice. Audiences, tiers and byte budgets apply as in a frame, and the
+bytes are counted once. It is explicit rather than automatic because Tide cannot know when your
+`Heartbeat` code has finished: a connection of Tide's own would run before some of yours and after
+others. Measured in the mock at 40 ms one-way: a kick in `Heartbeat` reaches the client in 5 frames
+without it and in 4 with it, the same as a kick made in `Stepped`.
 
 ::: tip Bounces off the world
 Tide cannot see a bounce that physics resolves by itself, and you do not need to bump for it. Each
@@ -233,7 +297,8 @@ never dropped for the budget. A player who never had a character and has no
 `near` says, so also set `farEvery = 1` (nothing thinned), and give spectators a focus (so the budget
 cannot drop the ball for them).
 
-At 30 Hz the ball costs 30 × 28 B = 840 B/s per player in flight, and 32 B/s at rest.
+At 30 Hz the ball costs 30 × 28 B = 840 B/s per player in flight, and 32 B/s at rest. Stop repeats
+([above](#stops-restrepeats)) reach mid and far receivers whatever the budget.
 
 ## Other VMs
 
@@ -252,7 +317,14 @@ venue:bump(key)   -- Tide.bump, applied at the start of the Tide VM's next frame
 - Velocity is the root part's assembly velocity. A model without a part (pivot only) has none, and
   cannot be locked.
 - A cut that is lost (unreliable stream), and a kick nobody bumped, degrade to the position-only path
-  for that segment: bounded by the segment, never flung.
+  for that segment: bounded by the segment, never flung. A cut that is followed by rest (a placement, a
+  catch) goes out again with the stop's repeats, as a cut.
+- `Tide.flush` sends samples only. A `Tide.fire` / `Tide.set` made in the same `Heartbeat` connection
+  leaves with the next frame's reliable message; stamped with the bump's time it still applies with
+  the sample on clients that buffer.
+- A sample a client first gets from a repeat arrives one to `restRepeats` ticks later than it would
+  have: it counts as a late sample (`late`) when a newer one is already held, and like any sample that
+  arrives late it can raise the measured delay a little.
 - At the very end of a segment that ends in a cut, the reported velocity is the path's own slope, which
   carries the positions' quantization: up to (1/32 stud) / segment length per axis (0.94 studs/s at
   30 Hz, 1.9 at 60 Hz). A cut closer than 12.5 ms behind a sample reports that sample's velocity instead.
