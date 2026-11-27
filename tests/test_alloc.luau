@@ -400,4 +400,166 @@ return function(T)
 		T.eq(CState.counters.velocityRecords - records, 240 * 4, "all read")
 		T.eq(CState.counters.badPacket, 0)
 	end)
+
+	T.test("stop repeats, Tide.flush (with and without a bump) and Tide.span: zero allocations", function()
+		local w3 = T.world({ latency = 0.03 })
+		local Tide3 = T.serverTide(w3)
+		Tide3.kind("Ball", { velocity = true, rotation = "full", rate = 60, near = math.huge, apply = "none", keepAlive = 0.25 })
+		Tide3.kind("Crate", { rate = 60, restRepeats = 3 })
+		Tide3.start({ players = true })
+		for i = 1, 2 do
+			w3:spawnCharacter(w3:addPlayer(), CFrame.new(i * 6, 3, 0))
+		end
+		local ct = T.clientTide(w3, 1)
+		ct.start()
+		T.clientTide(w3, 2).start()
+		local things = {}
+		for k = 1, 6 do
+			things[k] = w3:spawnModel("thing" .. k, CFrame.new(k * 4, 5, 20), false)
+			things[k].HumanoidRootPart.AssemblyAngularVelocity = Vector3.zero
+			Tide3.add(things[k], if k <= 3 then "Ball" else "Crate")
+		end
+		-- every thing moves for 4 frames and rests for 9 (a stop sample, its repeats and, for
+		-- the balls, a keep-alive now and then), out of step with one another
+		local FRAMES = 420
+		local poses, vels = {}, {}
+		for f = 1, FRAMES do
+			poses[f], vels[f] = {}, {}
+			for k = 1, 6 do
+				local phase = (f + k * 2) % 13
+				local travelled = ((f + k * 2) // 13) * 4 + math.min(phase, 4)
+				poses[f][k] = CFrame.new(k * 4 + travelled * 0.3, 5, 20)
+				vels[f][k] = if phase >= 1 and phase < 4 then Vector3.new(18, 0, 0) else Vector3.zero
+			end
+		end
+		local function write(f)
+			for k = 1, 6 do
+				local root = things[k].HumanoidRootPart
+				root.CFrame = poses[f][k]
+				root.AssemblyLinearVelocity = vels[f][k]
+			end
+		end
+		for f = 1, 30 do
+			write(f)
+			w3:frame(DT)
+		end
+		local S3 = T.module(w3, "Server", "State")
+		local Relay3 = T.module(w3, "Server", "Relay")
+		local Ticker3 = T.module(w3, "Server", "Ticker")
+		local Server3 = T.module(w3, "Server", "Server")
+		Relay3.init(fakeRemote)
+		local kicks = {}
+		for i = 0, 4 do
+			kicks[i] = Vector3.new(0, 30 + i, 0)
+		end
+		local now = w3.now
+		local spans, flushed = 0, 0
+		-- `tide` = false: the frame's writes alone (what the mock itself allocates for them)
+		local function frame(f, tide)
+			now += DT
+			write(f)
+			if tide then
+				Ticker3.step(now, DT)
+				Relay3.step(now, DT)
+				-- after the frame's relay, as a Heartbeat connection: nothing bumped, then a kick
+				flushed += Server3.flush()
+			end
+			if f % 7 == 0 then
+				local ball = things[1 + (f // 7) % 3]
+				ball.HumanoidRootPart.AssemblyLinearVelocity = kicks[f % 5]
+				if tide then
+					Server3.bump(ball)
+					flushed += Server3.flush()
+					flushed += Server3.flush()
+				end
+			end
+			if not tide then
+				return
+			end
+			for k = 1, 6 do
+				local oldest, newest = Tide3.span(things[k])
+				if oldest <= newest then
+					spans += 1
+				end
+			end
+		end
+		for f = 31, 390 do
+			frame(f, true)
+		end
+		-- the same 300 frames again and again: each pass starts from the last one's end
+		local function pass(tide)
+			return allocs(function()
+				for f = 91, 390 do
+					frame(f, tide)
+				end
+			end)
+		end
+		pass(true)
+		local own = pass(false)
+		local repeats, flushes = S3.counters.restRepeats, S3.counters.flushes
+		flushed, spans = 0, 0
+		local n = steady(0, function()
+			return pass(true) - own
+		end)
+		T.eq(n, 0, "allocations in 300 server frames with stops, repeats, flushes and spans")
+		T.check(S3.counters.restRepeats - repeats >= 100, "repeats sent: " .. S3.counters.restRepeats - repeats)
+		T.check(S3.counters.flushes - flushes >= 40 and flushed >= 40, "flushes that sent: " .. flushed)
+		T.check(spans >= 6 * 300, "spans read")
+		T.eq(S3.counters.errors, 0)
+
+		-- client: every packet twice (the second time each record is a copy), and Tide.span
+		local CState = T.clientModule(w3, 1, "Client", "State")
+		local CReceive = T.clientModule(w3, 1, "Client", "Receive")
+		local CCodec = T.clientModule(w3, 1, "Shared", "Codec")
+		local views, slots = {}, {}
+		for k = 1, 6 do
+			views[k] = w3:replica(1, things[k])
+			slots[k] = CState.bySlotModel[views[k]]
+		end
+		local draft = buffer.create(10 + 6 * 32)
+		buffer.writeu8(draft, 0, 1)
+		buffer.writeu8(draft, 1, 0)
+		local pkt: buffer? = nil -- the draft at its exact size (the same every frame)
+		local ct0 = w3.now + 5
+		local function clientFrame(f)
+			local t = ct0 + f * DT
+			buffer.writef64(draft, 2, t - 0.03)
+			local pos = 10
+			for k, slot in slots do
+				if k <= 3 then
+					buffer.writeu8(draft, pos, 0)
+					buffer.writeu8(draft, pos + 1, 0)
+					pos += 2
+				end
+				buffer.writeu8(draft, pos, slot)
+				buffer.writeu8(draft, pos + 1, 0)
+				pos = CCodec.write(draft, pos + 2, k + (f // 3) * 0.1, 3, 0, 0, if k <= 3 then 2 else 0, 0, 0, 0, 1)
+			end
+			if pkt == nil or buffer.len(pkt) ~= pos then
+				pkt = buffer.create(pos)
+			end
+			buffer.copy(pkt :: buffer, 0, draft, 0, pos)
+			CReceive.packet(pkt, t)
+			CReceive.packet(pkt, t + 0.004)
+			for k = 1, 6 do
+				local oldest, newest = ct.span(views[k])
+				if oldest <= newest then
+					spans += 1
+				end
+			end
+		end
+		for f = 1, 60 do
+			clientFrame(f)
+		end
+		local copies, stored = CState.counters.repeats, CState.counters.records
+		local m = allocs(function()
+			for f = 61, 300 do
+				clientFrame(f)
+			end
+		end)
+		T.eq(m, 0, "allocations in 240 client frames, each packet twice")
+		T.eq(CState.counters.repeats - copies, 240 * 6, "the second of each was six copies")
+		T.eq(CState.counters.records - stored, 240 * 12)
+		T.eq(CState.counters.badPacket, 0)
+	end)
 end
