@@ -1021,10 +1021,25 @@ function Server.setAudience(slot: number, audience: any)
 	Relay.recomputeSlot(slot)
 end
 
+-- Forgets the focuses remembered for players that are gone (a call made for a player that
+-- left, or one that left before Tide.start).
+local function pruneFocus()
+	local pending = State.focusPending
+	for player in pending do
+		if player.Parent == nil then
+			pending[player] = nil
+		end
+	end
+end
+
 -- Interest centre of a player that has no "Player" entity (a spectator camera, a watched
 -- match): a BasePart or Model (followed), a Vector3, or nil (none). A character entity,
 -- while it exists, still wins.
-function Server.focus(player: any, target: any)
+-- A player Tide does not have a receiver for yet (the call came before Tide's own PlayerAdded
+-- connection ran, or before Tide.start) keeps the focus until the receiver is created.
+-- Returns true when the focus is set or remembered, false for a player that is not in the
+-- game (nothing is kept).
+function Server.focus(player: any, target: any): boolean
 	assert(typeof(player) == "Instance" and player:IsA("Player"), "Tide.focus: player expected")
 	local kind = typeof(target)
 	assert(
@@ -1033,13 +1048,21 @@ function Server.focus(player: any, target: any)
 	)
 	local rx = State.rx[player]
 	if rx == nil then
-		return
+		local pending = State.focusPending
+		pending[player] = nil
+		pruneFocus()
+		if player.Parent == nil then
+			return false
+		end
+		pending[player] = target
+		return true
 	end
 	rx.focus = target
 	rx.focusX, rx.focusY, rx.focusZ = nil, nil, nil
 	if rx.ready then
 		Relay.recomputeRx(rx)
 	end
+	return true
 end
 
 --------------------------------------------------------------------------------
@@ -1302,6 +1325,14 @@ local function onPlayerAdded(player: any)
 		resendT = -1,
 		conns = {},
 	}
+	-- a focus set before this record existed
+	local pending = State.focusPending
+	local focus = pending[player]
+	if focus ~= nil then
+		pending[player] = nil
+		State.rx[player].focus = focus
+	end
+	pruneFocus()
 	if autoPlayers then
 		local rx = State.rx[player]
 		table.insert(
@@ -1326,6 +1357,7 @@ local function onPlayerAdded(player: any)
 end
 
 local function onPlayerRemoving(player: any)
+	State.focusPending[player] = nil
 	local rx = State.rx[player]
 	if rx == nil then
 		return
@@ -1554,6 +1586,7 @@ function Server.start(opts: { [string]: any }?): boolean
 	for _, player in Players:GetPlayers() do
 		onPlayerAdded(player)
 	end
+	pruneFocus()
 	rateT = now()
 	RunService.PreSimulation:Connect(onPreSimulation)
 	RunService.PostSimulation:Connect(onFrame)

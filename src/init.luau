@@ -275,9 +275,11 @@ if IS_SERVER then
 	end
 
 	-- Interest centre for a player without a "Player" entity (spectating, watching a match):
-	-- a BasePart or Model (followed), a Vector3, or nil.
-	function Tide.focus(player: Player, target: any)
-		Side.focus(player, target)
+	-- a BasePart or Model (followed), a Vector3, or nil. Set before Tide knows the player (in
+	-- your own PlayerAdded connection, before Tide.start), it is kept until it does. Returns
+	-- false for a player that is not in the game.
+	function Tide.focus(player: Player, target: any): boolean
+		return Side.focus(player, target)
 	end
 
 	function Tide.onSuspicious(fn: (player: Player, reason: string) -> ())

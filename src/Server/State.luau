@@ -91,6 +91,8 @@ State.charSlot = {} :: { [any]: number } -- player -> slot of their Player-kind 
 -- receivers (players)
 State.rx = {} :: { [any]: any } -- player -> receiver record
 State.rxList = {} :: { any } -- ready receivers
+-- Tide.focus for a player whose receiver record does not exist yet (taken when it is created)
+State.focusPending = {} :: { [any]: any }
 
 State.counters = {
 	packets = 0,
