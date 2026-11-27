@@ -49,6 +49,7 @@
 --                       ticks (the default for velocity kinds; 0 for the others): a lost packet
 --                       does not leave receivers carrying a stopped body on
 --   server: Tide.bump(model) -> stamp     -- sample now, out of tick (after a kick): a "cut"
+--           Tide.flush() -> sent          -- send bumped samples now (a kick made after Tide's step)
 --           Tide.at(model, t) -> CFrame, velocity, spin     Tide.latest(model) -> CFrame, velocity, spin, stamp
 --   client: Tide.latest(model) -> CFrame, velocity, spin, stamp   (newest received sample)
 --           Tide.at(model, t, extrapolate?) -> CFrame, velocity, spin   (the buffered path at server time t)
@@ -264,6 +265,15 @@ if IS_SERVER then
 		return Side.bump(target)
 	end
 
+	-- Sends the samples of entities bumped since the last relay now, instead of with the next
+	-- frame's packet: call it once after the kicks of a Heartbeat connection (anything that
+	-- runs after Tide's step of the frame). Returns the number of entities sent; 0 when
+	-- nothing was bumped, and while a frame's own relay is still to come (between
+	-- PreSimulation and the end of Tide's step). See Server.flush.
+	function Tide.flush(): number
+		return Side.flush()
+	end
+
 	-- Interest centre for a player without a "Player" entity (spectating, watching a match):
 	-- a BasePart or Model (followed), a Vector3, or nil.
 	function Tide.focus(player: Player, target: any)
@@ -302,6 +312,11 @@ else
 	-- Server only (nil here, so shared code may call it).
 	function Tide.bump(_model: any): number?
 		return nil
+	end
+
+	-- Server only (0 here, so shared code may call it).
+	function Tide.flush(): number
+		return 0
 	end
 
 	function Tide.sampleInfo(model: Instance, into: { [string]: any }?): { [string]: any }?

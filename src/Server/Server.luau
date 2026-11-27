@@ -777,6 +777,8 @@ end
 --     entity is sampled at that step whatever its kind's tick, with the pose physics ends on;
 --     the time returned is the time of the call (the sample's is within the frame after it).
 -- Nothing is sent when neither the pose nor the velocity changed since the newest sample.
+-- A sample taken at once waits for a relay: the frame's own, or Tide.flush (Server.flush) for a
+-- bump made after it.
 function Server.bump(target: any): number?
 	local slot = if type(target) == "number" then target else Server.slotOf(target)
 	if slot == nil or State.index[slot] == nil or State.owner[slot] or State.kind[slot].motion == false then
@@ -808,9 +810,43 @@ function Server.bump(target: any): number?
 		stamp = floor
 	end
 	State.forceCut[slot] = true
+	local before = h.last
 	Ticker.sample(slot, stamp, true)
+	if h.last > before and not State.late[slot] then
+		State.late[slot] = true
+		local n = State.lateN + 1
+		State.lateN = n
+		State.lateList[n] = slot
+	end
 	c.bumps += 1
 	return stamp
+end
+
+local stepping = false -- inside Tide's own step of a frame
+
+-- Sends, now, the samples of the entities bumped since the last relay, to the receivers the
+-- frame's relay would send them to (audiences, tiers and byte budgets as there; the bytes are
+-- charged once, and the frame's relay does not send them again). For a kick made after Tide's
+-- step of the frame (a Heartbeat connection, a thread resumed by the scheduler): without it
+-- the sample leaves with the next frame's packet. Returns the number of entities sent.
+-- Does nothing (0) when nothing was bumped, between PreSimulation and the end of Tide's step
+-- (that step's relay is about to send everything, and a bump made then is not sampled yet),
+-- and from a callback that runs inside a relay.
+function Server.flush(): number
+	if State.lateN == 0 or State.inSim or stepping or not State.started then
+		return 0
+	end
+	-- queued ADD / OWNER messages first, as in a frame: receivers must know the entities
+	flushBroadcast()
+	local sent = Relay.flush(now())
+	if sent > 0 then
+		State.counters.flushes += 1
+		local count = LH.counter
+		if count then
+			count("Tide.Flush")
+		end
+	end
+	return sent
 end
 
 -- Intents queued by other VMs on a link (Shared/Link), applied at the start of a frame.
@@ -1400,6 +1436,7 @@ end
 local function onFrame(dt: number)
 	local t = now()
 	frame += 1
+	stepping = true
 	-- server time is the clock; fall back to dt if it did not move
 	local step = t - lastT
 	if lastT == 0 or step <= 0 or step > 1 then
@@ -1430,6 +1467,7 @@ local function onFrame(dt: number)
 	end
 	Mirror.write()
 	countRates(t)
+	stepping = false
 end
 
 local function onUpload(player: any, payload: any)
